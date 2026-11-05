@@ -1,0 +1,514 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// ----------------------------------------------------
+// ENUMS
+// ----------------------------------------------------
+enum Role {
+  ADMIN
+  COWORKER
+  COMPANY_ADMIN
+  PROPERTY_MANAGER
+  ACCOUNTANT
+  MAINTENANCE_STAFF
+  OWNER
+  TENANT
+}
+
+enum UnitStatus {
+  OCCUPIED
+  VACANT
+  MAINTENANCE
+  TURNOVER
+}
+
+enum ReadinessStage {
+  NOTICE_GIVEN
+  MOVE_OUT_INSPECTION
+  TRASH_OUT
+  MAINTENANCE_REPAIRS
+  PAINTING
+  DEEP_CLEANING
+  FINAL_INSPECTION
+  READY_TO_LEASE
+}
+
+enum LeaseStatus {
+  DRAFT
+  ACTIVE
+  EXPIRING_SOON
+  EXPIRED
+  TERMINATED
+  RENEWED
+}
+
+enum RenewalStatus {
+  PENDING_REVIEW
+  OFFER_SENT
+  ACCEPTED
+  REJECTED
+  NEGOTIATING
+}
+
+enum InvoiceStatus {
+  UNPAID
+  PARTIALLY_PAID
+  PAID
+  OVERDUE
+  CANCELLED
+}
+
+enum PaymentMethod {
+  INTERAC_E_TRANSFER
+  CREDIT_CARD
+  PRE_AUTHORIZED_DEBIT
+  BANK_TRANSFER
+  CHEQUE
+  CASH
+}
+
+enum PaymentStatus {
+  PENDING
+  COMPLETED
+  FAILED
+  REFUNDED
+}
+
+enum Priority {
+  LOW
+  MEDIUM
+  HIGH
+  EMERGENCY
+}
+
+enum TicketStatus {
+  SUBMITTED
+  IN_PROGRESS
+  PENDING_PARTS
+  RESOLVED
+  CLOSED
+}
+
+enum TalStatus {
+  DRAFTED
+  FILED
+  HEARING_SCHEDULED
+  AWAITING_JUDGMENT
+  CLOSED_FAVORABLE
+  CLOSED_UNFAVORABLE
+}
+
+enum MessageChannel {
+  EMAIL
+  SMS
+}
+
+// ----------------------------------------------------
+// CORE ENTITIES
+// ----------------------------------------------------
+
+model Company {
+  id           String        @id @default(uuid())
+  name         String
+  code         String        @unique
+  contactEmail String
+  contactPhone String?
+  taxNumber    String?
+  isActive     Boolean       @default(true)
+  properties   Property[]
+  users        User[]
+  bankAccounts BankAccount[]
+  tenants      Tenant[]
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+}
+
+model User {
+  id           String        @id @default(uuid())
+  companyId    String?
+  company      Company?      @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  email        String        @unique
+  passwordHash String
+  firstName    String
+  lastName     String
+  phone        String?
+  role         Role          @default(PROPERTY_MANAGER)
+  isActive     Boolean       @default(true)
+  refreshToken String?       // Hashed refresh token for rotation
+  staffProfile StaffProfile?
+  notes        Note[]
+  auditLogs    AuditLog[]
+  sentMessages CommunicationMessage[]
+  permissions  Permission[]
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  @@index([companyId])
+  @@index([role])
+}
+
+model StaffProfile {
+  id           String              @id @default(uuid())
+  userId       String              @unique
+  user         User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  department   String
+  hourlyRate   Decimal?            @db.Decimal(10, 2)
+  clockLogs    ClockLog[]
+  tickets      MaintenanceTicket[]
+  createdAt    DateTime            @default(now())
+}
+
+model ClockLog {
+  id         String       @id @default(uuid())
+  staffId    String
+  staff      StaffProfile @relation(fields: [staffId], references: [id], onDelete: Cascade)
+  clockIn    DateTime
+  clockOut   DateTime?
+  totalHours Decimal?     @db.Decimal(5, 2)
+  notes      String?
+}
+
+model Property {
+  id           String              @id @default(uuid())
+  companyId    String
+  company      Company             @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  name         String
+  address      String
+  city         String
+  state        String
+  postalCode   String
+  totalUnits   Int                 @default(0)
+  isActive     Boolean             @default(true)
+  units        Unit[]
+  tickets      MaintenanceTicket[]
+  insurance    InsurancePolicy[]
+  talCases     TalCase[]
+  createdAt    DateTime            @default(now())
+  updatedAt    DateTime            @updatedAt
+
+  @@index([companyId])
+}
+
+model UnitType {
+  id          String   @id @default(uuid())
+  name        String   // e.g. "1 Bedroom + Den", "Studio"
+  code        String   @unique
+  marketRent  Decimal  @db.Decimal(10, 2)
+  units       Unit[]
+}
+
+model Unit {
+  id              String              @id @default(uuid())
+  propertyId      String
+  property        Property            @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  unitTypeId      String?
+  unitType        UnitType?           @relation(fields: [unitTypeId], references: [id])
+  unitNumber      String
+  floor           Int                 @default(1)
+  bedrooms        Int                 @default(1)
+  bathrooms       Decimal             @default(1.0) @db.Decimal(3, 1)
+  squareFeet      Int?
+  baseRent        Decimal             @db.Decimal(10, 2)
+  status          UnitStatus          @default(VACANT)
+  isActive        Boolean             @default(true)
+  leases          Lease[]
+  readiness       UnitReadiness?
+  tickets         MaintenanceTicket[]
+  vehicles        Vehicle[]
+  moveInspections MoveInspection[]
+  talCases        TalCase[]
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+
+  @@unique([propertyId, unitNumber])
+  @@index([status])
+}
+
+model UnitReadiness {
+  id               String         @id @default(uuid())
+  unitId           String         @unique
+  unit             Unit           @relation(fields: [unitId], references: [id], onDelete: Cascade)
+  stage            ReadinessStage @default(NOTICE_GIVEN)
+  assignedWorker   String?
+  turnoverDeadline DateTime?
+  cleaningComplete Boolean        @default(false)
+  paintComplete    Boolean        @default(false)
+  repairComplete   Boolean        @default(false)
+  notes            String?
+  updatedAt        DateTime       @updatedAt
+}
+
+model Tenant {
+  id               String              @id @default(uuid())
+  companyId        String
+  company          Company             @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  firstName        String
+  lastName         String
+  email            String              @unique
+  phone            String
+  emergencyContact String?
+  isActive         Boolean             @default(true)
+  leases           Lease[]
+  invoices         Invoice[]
+  payments         Payment[]
+  credits          TenantCredit[]
+  vehicles         Vehicle[]
+  talCases         TalCase[]
+  tickets          MaintenanceTicket[]
+  messages         CommunicationMessage[]
+  createdAt        DateTime            @default(now())
+  updatedAt        DateTime            @updatedAt
+
+  @@index([companyId])
+}
+
+model Vehicle {
+  id           String   @id @default(uuid())
+  tenantId     String
+  tenant       Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  unitId       String
+  unit         Unit     @relation(fields: [unitId], references: [id], onDelete: Cascade)
+  make         String
+  model        String
+  licensePlate String   @unique
+  permitNumber String?
+  color        String?
+  createdAt    DateTime @default(now())
+}
+
+model Lease {
+  id              String           @id @default(uuid())
+  unitId          String
+  unit            Unit             @relation(fields: [unitId], references: [id], onDelete: Restrict)
+  tenantId        String
+  tenant          Tenant           @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  startDate       DateTime
+  endDate         DateTime
+  rentAmount      Decimal          @db.Decimal(10, 2)
+  depositAmount   Decimal          @default(0) @db.Decimal(10, 2)
+  status          LeaseStatus      @default(ACTIVE)
+  isActive        Boolean          @default(true)
+  renewals        LeaseRenewal[]
+  invoices        Invoice[]
+  moveInspections MoveInspection[]
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+
+  @@index([unitId])
+  @@index([tenantId])
+  @@index([status])
+}
+
+model LeaseRenewal {
+  id              String        @id @default(uuid())
+  leaseId         String
+  lease           Lease         @relation(fields: [leaseId], references: [id], onDelete: Cascade)
+  proposedRent    Decimal       @db.Decimal(10, 2)
+  proposedEndDate DateTime
+  noticeSentDate  DateTime      @default(now())
+  responseDate    DateTime?
+  status          RenewalStatus @default(PENDING_REVIEW)
+}
+
+model MoveInspection {
+  id              String   @id @default(uuid())
+  leaseId         String
+  lease           Lease    @relation(fields: [leaseId], references: [id], onDelete: Cascade)
+  unitId          String
+  unit            Unit     @relation(fields: [unitId], references: [id], onDelete: Cascade)
+  type            String   // "MOVE_IN" or "MOVE_OUT"
+  inspectionDate  DateTime @default(now())
+  inspectorName   String
+  checklistJson   Json     // Condition ratings per room
+  mediaUrls       String[] // Cloudinary photo URLs
+  signedByTenant  Boolean  @default(false)
+}
+
+model BankAccount {
+  id            String    @id @default(uuid())
+  companyId     String
+  company       Company   @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  bankName      String
+  accountName   String
+  accountNumber String
+  routingNumber String?
+  balance       Decimal   @default(0) @db.Decimal(12, 2)
+  isActive      Boolean   @default(true)
+  payments      Payment[]
+  createdAt     DateTime  @default(now())
+}
+
+model Invoice {
+  id            String        @id @default(uuid())
+  leaseId       String
+  lease         Lease         @relation(fields: [leaseId], references: [id], onDelete: Cascade)
+  tenantId      String
+  tenant        Tenant        @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  invoiceNumber String        @unique
+  amountDue     Decimal       @db.Decimal(10, 2)
+  amountPaid    Decimal       @default(0) @db.Decimal(10, 2)
+  dueDate       DateTime
+  status        InvoiceStatus @default(UNPAID)
+  payments      Payment[]
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  @@index([tenantId])
+  @@index([status])
+}
+
+model Payment {
+  id            String        @id @default(uuid())
+  invoiceId     String?
+  invoice       Invoice?      @relation(fields: [invoiceId], references: [id], onDelete: SetNull)
+  tenantId      String
+  tenant        Tenant        @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  bankAccountId String
+  bankAccount   BankAccount   @relation(fields: [bankAccountId], references: [id], onDelete: Restrict)
+  amount        Decimal       @db.Decimal(10, 2)
+  paymentMethod PaymentMethod
+  status        PaymentStatus @default(COMPLETED)
+  referenceId   String?       // Check number / Interac reference
+  paidAt        DateTime      @default(now())
+
+  @@index([tenantId])
+  @@index([bankAccountId])
+}
+
+model TenantCredit {
+  id        String   @id @default(uuid())
+  tenantId  String
+  tenant    Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  amount    Decimal  @db.Decimal(10, 2)
+  reason    String?
+  appliedAt DateTime?
+  createdAt DateTime @default(now())
+
+  @@index([tenantId])
+}
+
+model MaintenanceTicket {
+  id          String        @id @default(uuid())
+  propertyId  String
+  property    Property      @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  unitId      String
+  unit        Unit          @relation(fields: [unitId], references: [id], onDelete: Cascade)
+  tenantId    String?
+  tenant      Tenant?       @relation(fields: [tenantId], references: [id], onDelete: SetNull)
+  assignedTo  String?
+  assignee    StaffProfile? @relation(fields: [assignedTo], references: [id], onDelete: SetNull)
+  title       String
+  description String
+  priority    Priority      @default(MEDIUM)
+  status      TicketStatus  @default(SUBMITTED)
+  photoUrls   String[]      // Cloudinary photo URLs
+  resolvedAt  DateTime?
+  resolutionNote String?
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  @@index([propertyId])
+  @@index([status])
+}
+
+model TalCase {
+  id             String      @id @default(uuid())
+  propertyId     String
+  property       Property    @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  unitId         String
+  unit           Unit        @relation(fields: [unitId], references: [id], onDelete: Cascade)
+  tenantId       String
+  tenant         Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  docketNumber   String      @unique
+  filingDate     DateTime
+  amountClaimed  Decimal     @db.Decimal(10, 2)
+  status         TalStatus   @default(DRAFTED)
+  evidenceUrls   String[]    // Locked Cloudinary PDF / Image URLs
+  events         CaseEvent[]
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+}
+
+model CaseEvent {
+  id          String   @id @default(uuid())
+  caseId      String
+  talCase     TalCase  @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  eventDate   DateTime
+  eventType   String   // "HEARING", "DEADLINE", "DOCUMENT_SUBMISSION"
+  description String
+  isCompleted Boolean  @default(false)
+}
+
+model InsurancePolicy {
+  id             String    @id @default(uuid())
+  propertyId     String
+  property       Property  @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  carrier        String
+  policyNumber   String
+  coverageAmount Decimal   @db.Decimal(12, 2)
+  expiryDate     DateTime
+  isCompliant    Boolean   @default(true)
+}
+
+model Note {
+  id         String   @id @default(uuid())
+  authorId   String
+  author     User     @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  targetType String   // "PROPERTY", "UNIT", "TENANT", "LEASE"
+  targetId   String
+  title      String
+  content    String
+  createdAt  DateTime @default(now())
+}
+
+model CommunicationMessage {
+  id          String         @id @default(uuid())
+  senderId    String?
+  sender      User?          @relation(fields: [senderId], references: [id], onDelete: SetNull)
+  recipientId String
+  recipient   Tenant         @relation(fields: [recipientId], references: [id], onDelete: Cascade)
+  channel     MessageChannel @default(EMAIL)
+  subject     String?
+  message     String
+  sentAt      DateTime       @default(now())
+
+  @@index([recipientId])
+}
+
+model AuditLog {
+  id         String   @id @default(uuid())
+  userId     String?
+  user       User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  action     String   // e.g. "RECORD_PAYMENT", "UPDATE_LEASE"
+  entityType String   // "Payment", "Lease", "Unit"
+  entityId   String
+  oldData    Json?
+  newData    Json?
+  ipAddress  String?
+  timestamp  DateTime @default(now())
+
+  @@index([entityType, entityId])
+  @@index([timestamp])
+}
+
+
+model Permission {
+  id         String   @id @default(uuid())
+  userId     String
+  moduleName String
+  canView    Boolean  @default(false)
+  canAdd     Boolean  @default(false)
+  canEdit    Boolean  @default(false)
+  canDelete  Boolean  @default(false)
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, moduleName])
+  @@index([userId])
+  @@map("permissions")
+}
