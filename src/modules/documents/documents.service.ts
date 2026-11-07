@@ -59,7 +59,13 @@ export class DocumentsService {
 
     query += ` ORDER BY d."createdAt" DESC`;
 
-    const rawDocs: any[] = await prisma.$queryRawUnsafe(query);
+    let rawDocs: any[] = [];
+    try {
+      rawDocs = await prisma.$queryRawUnsafe(query);
+    } catch (err) {
+      console.error('Error listing documents:', err);
+      return [];
+    }
 
     return rawDocs.map((r) => {
       let links: any[] = [];

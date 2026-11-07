@@ -529,3 +529,88 @@ model Permission {
   @@index([userId])
   @@map("permissions")
 }
+
+model Document {
+  id         String    @id @default(uuid())
+  name       String
+  type       String    @default("Other")
+  fileUrl    String?
+  fileSize   String?   @default("1.2 MB")
+  mimeType   String?   @default("application/pdf")
+  expiryDate DateTime?
+  companyId  String?
+  propertyId String?
+  unitId     String?
+  userId     String?
+  leaseId    String?
+  links      Json?     @default("[]")
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @default(now()) @updatedAt
+  isActive   Boolean   @default(true)
+}
+
+model SmsTemplate {
+  id        String   @id @default(uuid())
+  name      String
+  category  String   @default("General")
+  content   String
+  companyId String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now()) @updatedAt
+  isActive  Boolean  @default(true)
+}
+
+model SmsCampaign {
+  id               String   @id @default(uuid())
+  name             String
+  status           String   @default("COMPLETED")
+  totalRecipients  Int      @default(0)
+  successCount     Int      @default(0)
+  failedCount      Int      @default(0)
+  templateId       String?
+  customContent    String?
+  buildingId       String?
+  recipientType    String?  @default("TENANTS")
+  recipientIds     Json?
+  failedRecipients Json?
+  companyId        String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @default(now()) @updatedAt
+  isActive         Boolean  @default(true)
+}
+
+model EmailTemplate {
+  id          String   @id @default(uuid())
+  name        String
+  subject     String
+  body        String
+  type        String   @default("General")
+  language    String   @default("en")
+  documentIds Json?    @default("[]")
+  companyId   String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @default(now()) @updatedAt
+  isActive    Boolean  @default(true)
+}
+
+model EmailLog {
+  id              String   @id @default(uuid())
+  subject         String
+  body            String
+  recipient       String
+  recipientName   String?
+  recipientUserId String?
+  recipientType   String?  @default("TENANT")
+  templateId      String?
+  templateName    String?
+  status          String   @default("SENT")
+  hasAttachments  Boolean  @default(false)
+  attachmentNames Json?    @default("[]")
+  senderId        String?
+  companyId       String?
+  buildingId      String?
+  errorReason     String?
+  sentAt          DateTime @default(now())
+  createdAt       DateTime @default(now())
+}
+
