@@ -8,7 +8,9 @@ export const getUnreadStats = async (req: Request, res: Response) => {
 
 export const getTemplates = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const templates = await CommunicationsService.getTemplates();
+    const isAdmin = req.user?.role === 'ADMIN' || req.user?.role === 'SUPER_ADMIN';
+    const companyId = isAdmin ? undefined : req.user?.effectiveCompanyId;
+    const templates = await CommunicationsService.getTemplates(companyId);
     return sendSuccess(res, templates);
   } catch (err) {
     return next(err);
@@ -17,7 +19,12 @@ export const getTemplates = async (req: Request, res: Response, next: NextFuncti
 
 export const createTemplate = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const template = await CommunicationsService.createTemplate(req.body);
+    const isAdmin = req.user?.role === 'ADMIN' || req.user?.role === 'SUPER_ADMIN';
+    const companyId = isAdmin ? undefined : req.user?.effectiveCompanyId;
+    const template = await CommunicationsService.createTemplate({
+      ...req.body,
+      companyId: req.body.companyId || companyId,
+    });
     return sendSuccess(res, template, 201);
   } catch (err) {
     return next(err);
@@ -46,10 +53,14 @@ export const deleteTemplate = async (req: Request, res: Response, next: NextFunc
 
 export const listConversations = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const isAdmin = req.user?.role === 'ADMIN';
+    const isAdmin = req.user?.role === 'ADMIN' || req.user?.role === 'SUPER_ADMIN';
     const companyId = isAdmin ? undefined : req.user?.effectiveCompanyId;
 
-    const conversations = await CommunicationsService.listConversations(companyId);
+    const conversations = await CommunicationsService.listConversations(
+      companyId,
+      req.user?.userId,
+      req.user?.role
+    );
     return sendSuccess(res, conversations, 200);
   } catch (err) {
     return next(err);
@@ -59,15 +70,24 @@ export const listConversations = async (req: Request, res: Response, next: NextF
 export const getHistory = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { userId } = req.params;
-    const history = await CommunicationsService.getHistory(userId);
+    const history = await CommunicationsService.getHistory(
+      userId,
+      req.user?.userId,
+      req.user?.role
+    );
     return sendSuccess(res, history);
   } catch (err) {
     return next(err);
   }
 };
 
-export const markAsRead = async (req: Request, res: Response) => {
-  return sendSuccess(res, { success: true });
+export const markAsRead = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const result = await CommunicationsService.markAsRead(req.body?.senderId);
+    return sendSuccess(res, result);
+  } catch (err) {
+    return next(err);
+  }
 };
 
 export const sendMessage = async (req: Request, res: Response, next: NextFunction) => {
@@ -79,13 +99,20 @@ export const sendMessage = async (req: Request, res: Response, next: NextFunctio
   }
 };
 
-export const listCampaigns = async (req: Request, res: Response) => {
-  return sendSuccess(res, []);
+export const listCampaigns = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const isAdmin = req.user?.role === 'ADMIN' || req.user?.role === 'SUPER_ADMIN';
+    const companyId = isAdmin ? undefined : req.user?.effectiveCompanyId;
+    const campaigns = await CommunicationsService.listCampaigns(companyId);
+    return sendSuccess(res, campaigns);
+  } catch (err) {
+    return next(err);
+  }
 };
 
 export const sendCampaign = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const isAdmin = req.user?.role === 'ADMIN';
+    const isAdmin = req.user?.role === 'ADMIN' || req.user?.role === 'SUPER_ADMIN';
     const companyId = isAdmin ? undefined : req.user?.effectiveCompanyId;
 
     const result = await CommunicationsService.sendCampaign(req.body, companyId, req.user?.userId);
@@ -95,14 +122,32 @@ export const sendCampaign = async (req: Request, res: Response, next: NextFuncti
   }
 };
 
-export const deleteCampaign = async (req: Request, res: Response) => {
-  return sendSuccess(res, { message: 'Campaign deleted' });
+export const deleteCampaign = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { id } = req.params;
+    const result = await CommunicationsService.deleteCampaign(id);
+    return sendSuccess(res, result);
+  } catch (err) {
+    return next(err);
+  }
 };
 
-export const getCampaignFailures = async (req: Request, res: Response) => {
-  return sendSuccess(res, []);
+export const getCampaignFailures = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { id } = req.params;
+    const result = await CommunicationsService.getCampaignFailures(id);
+    return sendSuccess(res, result);
+  } catch (err) {
+    return next(err);
+  }
 };
 
-export const retryCampaign = async (req: Request, res: Response) => {
-  return sendSuccess(res, { message: 'Campaign retried' });
+export const retryCampaign = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { id } = req.params;
+    const result = await CommunicationsService.retryCampaign(id);
+    return sendSuccess(res, result);
+  } catch (err) {
+    return next(err);
+  }
 };

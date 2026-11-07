@@ -4,7 +4,7 @@ import { AppError } from '../../middlewares/errorHandler';
 export class PayrollService {
   private static async getSystemAdminId(): Promise<string> {
     const admin = await prisma.user.findFirst({
-      where: { role: { in: ['ADMIN', 'SUPER_ADMIN'] as any } },
+      where: { role: 'ADMIN' },
     });
     if (admin) return admin.id;
     const anyUser = await prisma.user.findFirst();

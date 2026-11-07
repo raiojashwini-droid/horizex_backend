@@ -146,6 +146,7 @@ model User {
   auditLogs    AuditLog[]
   sentMessages CommunicationMessage[]
   permissions  Permission[]
+  ownedProperties Property[] @relation("PropertyOwner")
   createdAt    DateTime      @default(now())
   updatedAt    DateTime      @updatedAt
 
@@ -178,6 +179,8 @@ model Property {
   id           String              @id @default(uuid())
   companyId    String
   company      Company             @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  ownerId      String?
+  owner        User?               @relation("PropertyOwner", fields: [ownerId], references: [id], onDelete: SetNull)
   name         String
   address      String
   city         String
@@ -193,6 +196,7 @@ model Property {
   updatedAt    DateTime            @updatedAt
 
   @@index([companyId])
+  @@index([ownerId])
 }
 
 model UnitType {
@@ -217,6 +221,18 @@ model Unit {
   baseRent        Decimal             @db.Decimal(10, 2)
   status          UnitStatus          @default(VACANT)
   isActive        Boolean             @default(true)
+  rentalMode      String?             @default("FULL_UNIT")
+  isTemporaryAccommodation Boolean    @default(false)
+  temporaryUnitId String?
+  potentialRent   Decimal?            @db.Decimal(10, 2)
+  promotionalDiscount Decimal?        @default(0) @db.Decimal(10, 2)
+  reservedFlag    Boolean             @default(false)
+  reserveFirstName String?
+  reserveLastName String?
+  reserveEmail    String?
+  reservePhone    String?
+  tentativeMoveInDate DateTime?
+  bedroomDetails  Json?
   leases          Lease[]
   readiness       UnitReadiness?
   tickets         MaintenanceTicket[]
@@ -355,6 +371,7 @@ model Invoice {
   amountPaid    Decimal       @default(0) @db.Decimal(10, 2)
   dueDate       DateTime
   status        InvoiceStatus @default(UNPAID)
+  category      String?       @default("RENT")
   payments      Payment[]
   createdAt     DateTime      @default(now())
   updatedAt     DateTime      @updatedAt

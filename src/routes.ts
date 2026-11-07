@@ -17,7 +17,11 @@ import employeesRouter from './modules/employees/employees.routes';
 import payrollRouter, { shiftsRouter, leavesRouter, overtimeRouter, runsRouter } from './modules/payroll/payroll.routes';
 import tenantPortalRouter from './modules/tenantPortal/tenantPortal.routes';
 import ownerPortalRouter from './modules/ownerPortal/ownerPortal.routes';
+import ownersRouter from './modules/owners/owners.routes';
 import coworkersRouter from './modules/coworkers/coworkers.routes';
+import documentsRouter from './modules/documents/documents.routes';
+import emailRouter from './modules/email/email.routes';
+import { getAdminRentRoll, updatePotentialRent } from './modules/reports/rentRoll.controller';
 import { getDashboardStats } from './modules/analytics/analytics.controller';
 import {
   getReadinessDashboard,
@@ -49,7 +53,7 @@ router.use('/media', mediaRouter);
 router.get(
   '/admin/dashboard/stats',
   authenticate,
-  authorizeRoles('SUPER_ADMIN', 'COMPANY_ADMIN', 'PROPERTY_MANAGER', 'ACCOUNTANT', 'OWNER'),
+  authorizeRoles('SUPER_ADMIN', 'COMPANY_ADMIN', 'PROPERTY_MANAGER', 'ACCOUNTANT', 'OWNER', 'ADMIN'),
   getDashboardStats
 );
 router.get(
@@ -83,6 +87,20 @@ router.put(
   updateUnitReadiness
 );
 
+// Reports - Rent Roll Engine
+router.get(
+  '/admin/reports/rent-roll',
+  authenticate,
+  authorizeRoles('SUPER_ADMIN', 'COMPANY_ADMIN', 'PROPERTY_MANAGER', 'ACCOUNTANT', 'OWNER', 'ADMIN'),
+  getAdminRentRoll
+);
+router.put(
+  '/admin/reports/potential-rent',
+  authenticate,
+  authorizeRoles('SUPER_ADMIN', 'COMPANY_ADMIN', 'PROPERTY_MANAGER', 'ADMIN'),
+  updatePotentialRent
+);
+
 // Administrative & Operations Modules
 router.use('/admin/companies', companiesRouter);
 router.use('/admin/properties', propertiesRouter);
@@ -104,6 +122,9 @@ router.use('/admin/overtime', overtimeRouter);
 router.use('/admin/payroll/runs', runsRouter);
 router.use('/admin/payroll', payrollRouter);
 router.use('/admin', coworkersRouter); // Mounts /admin/coworkers and /admin/my-permissions
+router.use('/admin', ownersRouter); // Mounts /admin/owners and /admin/properties/available
+router.use('/admin/documents', documentsRouter);
+router.use('/admin/email', emailRouter);
 
 // Communication
 router.use('/communication', communicationsRouter);

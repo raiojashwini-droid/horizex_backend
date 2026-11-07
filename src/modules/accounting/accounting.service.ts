@@ -208,7 +208,8 @@ export class AccountingService {
             unit: {
               select: {
                 unitNumber: true,
-                property: { select: { name: true } },
+                propertyId: true,
+                property: { select: { id: true, name: true } },
               },
             },
           },
@@ -229,8 +230,24 @@ export class AccountingService {
       else if (daysOverdue > 60) agingBucket = '60_DAYS';
       else if (daysOverdue > 30) agingBucket = '30_DAYS';
 
+      const tenantName = inv.tenant ? `${inv.tenant.firstName || ''} ${inv.tenant.lastName || ''}`.trim() : 'Tenant';
+      const unitNumber = inv.lease?.unit?.unitNumber ? `Unit ${inv.lease.unit.unitNumber}` : 'Unit';
+      const propertyId = inv.lease?.unit?.propertyId || (inv.lease?.unit?.property as any)?.id;
+      const propertyName = inv.lease?.unit?.property?.name || 'Property';
+
       return {
         ...inv,
+        invoice: inv.invoiceNumber,
+        tenant: tenantName,
+        tenantObj: inv.tenant,
+        unit: unitNumber,
+        propertyId,
+        propertyName,
+        category: (inv as any).category || 'RENT',
+        leaseType: inv.lease ? 'Full Unit' : 'Other',
+        amount: Math.round(balance * 100) / 100,
+        dueDate: inv.dueDate ? new Date(inv.dueDate).toISOString().split('T')[0] : 'N/A',
+        status: inv.status === 'OVERDUE' ? 'Overdue' : inv.status === 'PARTIALLY_PAID' ? 'Partial' : 'Pending',
         balanceRemaining: Math.round(balance * 100) / 100,
         daysOverdue,
         agingBucket,

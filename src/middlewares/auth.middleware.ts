@@ -13,7 +13,11 @@ declare global {
 }
 
 export const authenticate = (req: Request, res: Response, next: NextFunction) => {
-  const authHeader = req.headers.authorization;
+  let authHeader = req.headers.authorization;
+
+  if ((!authHeader || !authHeader.startsWith('Bearer ')) && req.query.token) {
+    authHeader = `Bearer ${req.query.token}`;
+  }
 
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
     return sendError(res, 'UNAUTHORIZED', 'Authentication token is missing or malformed', 401);
