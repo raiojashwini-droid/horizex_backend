@@ -57,7 +57,7 @@ export const getOutstandingDues = async (req: Request, res: Response, next: Next
 
 export const listBankAccounts = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const isSuperAdmin = req.user?.role === 'SUPER_ADMIN';
+    const isSuperAdmin = req.user?.role === 'SUPER_ADMIN' || req.user?.role === 'ADMIN';
     const companyId = (req.query.companyId as string) || (isSuperAdmin ? undefined : req.user?.effectiveCompanyId);
 
     const accounts = await AccountingService.listBankAccounts(companyId);

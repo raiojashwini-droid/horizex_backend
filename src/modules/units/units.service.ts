@@ -11,27 +11,32 @@ export class UnitsService {
     minRent?: number;
     maxRent?: number;
     showInactive?: boolean;
+    search?: string;
+    unitType?: string;
   }) {
     const where: any = { isActive: true };
 
-    if (filters.propertyId) {
-      where.propertyId = filters.propertyId;
-    } else if (filters.companyId) {
-      where.property = { companyId: filters.companyId };
+    if (filters.propertyId && filters.propertyId !== 'all' && filters.propertyId !== 'undefined' && filters.propertyId !== 'null' && String(filters.propertyId).trim() !== '') {
+      where.propertyId = String(filters.propertyId).trim();
+    } else if (filters.companyId && filters.companyId !== 'all' && filters.companyId !== 'undefined' && filters.companyId !== 'null' && String(filters.companyId).trim() !== '') {
+      where.property = { companyId: String(filters.companyId).trim() };
     }
 
-    if (filters.status) {
-      where.status = filters.status;
+    if (filters.status && filters.status !== 'all') {
+      const s = String(filters.status).toUpperCase();
+      if (['VACANT', 'OCCUPIED', 'TURNOVER', 'MAINTENANCE'].includes(s)) {
+        where.status = s;
+      }
     }
 
-    if (filters.bedrooms !== undefined) {
-      where.bedrooms = filters.bedrooms;
+    if (filters.bedrooms !== undefined && !isNaN(Number(filters.bedrooms))) {
+      where.bedrooms = Number(filters.bedrooms);
     }
 
     if (filters.minRent !== undefined || filters.maxRent !== undefined) {
       where.baseRent = {};
-      if (filters.minRent !== undefined) where.baseRent.gte = filters.minRent;
-      if (filters.maxRent !== undefined) where.baseRent.lte = filters.maxRent;
+      if (filters.minRent !== undefined && !isNaN(Number(filters.minRent))) where.baseRent.gte = Number(filters.minRent);
+      if (filters.maxRent !== undefined && !isNaN(Number(filters.maxRent))) where.baseRent.lte = Number(filters.maxRent);
     }
 
     const units = await prisma.unit.findMany({
@@ -65,11 +70,15 @@ export class UnitsService {
         (u.readiness?.stage === 'MAINTENANCE_REPAIRS' ? 'New Construction' : 'Completed');
       const unit_status = meta.unit_status ||
         (classification === 'New Construction' ? 'INACTIVE' : 'ACTIVE');
+      const reserved_flag = u.reservedFlag || meta.reserved_flag || false;
+      const gc_delivered_target_date = meta.gc_delivered_target_date || null;
 
       return {
         ...u,
         classification,
         unit_status,
+        reserved_flag,
+        gc_delivered_target_date,
         companyName: u.property?.company?.name || '',
         buildingName: u.property?.name || '',
         building: u.property?.name || '',
@@ -144,16 +153,11 @@ export class UnitsService {
   }
 
   static async getUnitById(id: string, companyId?: string | null) {
-    const where: any = { id, isActive: true };
-    if (companyId) {
-      where.property = { companyId };
-    }
-
-    const unit = await prisma.unit.findFirst({
-      where,
+    const unit = await prisma.unit.findUnique({
+      where: { id },
       include: {
         property: {
-          include: { company: true },
+          include: { company: { select: { id: true, name: true } } },
         },
         unitType: true,
         readiness: true,
@@ -176,6 +180,10 @@ export class UnitsService {
       throw new AppError('Unit not found', 404, 'UNIT_NOT_FOUND');
     }
 
+    if (companyId && unit.property?.companyId !== companyId) {
+      throw new AppError('Unit not found or access denied', 404, 'UNIT_NOT_FOUND');
+    }
+
     const activeLease = unit.leases?.[0];
     let meta: any = {};
     try {
@@ -187,7 +195,9 @@ export class UnitsService {
       (classification === 'New Construction' ? 'INACTIVE' : 'ACTIVE');
 
     const count = Math.max(1, Number(unit.bedrooms) || 1);
-    const identifiers: string[] = Array.isArray(meta.bedroomIdentifiers) ? meta.bedroomIdentifiers : [];
+    const identifiers: string[] = Array.isArray(unit.bedroomDetails)
+      ? (unit.bedroomDetails as string[])
+      : (Array.isArray(meta.bedroomIdentifiers) ? meta.bedroomIdentifiers : []);
     const bedroomsList = [];
     for (let i = 0; i < count; i++) {
       const name = identifiers[i] || `${unit.unitNumber}-${i + 1}`;
@@ -204,6 +214,13 @@ export class UnitsService {
       ...unit,
       classification,
       unit_status,
+      reserved_flag: unit.reservedFlag || meta.reserved_flag || false,
+      gc_delivered_target_date: meta.gc_delivered_target_date || null,
+      reserve_firstName: unit.reserveFirstName || meta.reserve_firstName || '',
+      reserve_lastName: unit.reserveLastName || meta.reserve_lastName || '',
+      reserve_email: unit.reserveEmail || meta.reserve_email || '',
+      reserve_phone: unit.reservePhone || meta.reserve_phone || '',
+      tentative_move_in_date: unit.tentativeMoveInDate || meta.tentative_move_in_date || null,
       bedroomIdentifiers: identifiers,
       bedroomsList,
       companyName: (unit.property as any)?.company?.name || '',
@@ -241,30 +258,35 @@ export class UnitsService {
     actorUserId?: string
   ) {
     // Validate property exists
-    const property = await prisma.property.findFirst({
-      where: {
-        id: data.propertyId,
-        isActive: true,
-        ...(companyId ? { companyId } : {}),
-      },
+    const property = await prisma.property.findUnique({
+      where: { id: data.propertyId },
     });
 
     if (!property) {
-      throw new AppError('Property not found or access denied', 404, 'PROPERTY_NOT_FOUND');
+      throw new AppError('Property not found', 404, 'PROPERTY_NOT_FOUND');
+    }
+
+    if (companyId && property.companyId !== companyId) {
+      throw new AppError('Property not found or access denied', 403, 'PROPERTY_ACCESS_DENIED');
+    }
+
+    const cleanUnitNumber = String(data.unitNumber || '').trim();
+    if (!cleanUnitNumber) {
+      throw new AppError('Unit number is required', 400, 'UNIT_NUMBER_REQUIRED');
     }
 
     const existing = await prisma.unit.findUnique({
       where: {
         propertyId_unitNumber: {
           propertyId: data.propertyId,
-          unitNumber: data.unitNumber,
+          unitNumber: cleanUnitNumber,
         },
       },
     });
 
     if (existing && existing.isActive) {
       throw new AppError(
-        `Unit number ${data.unitNumber} already exists in this property`,
+        `Unit number ${cleanUnitNumber} already exists in this property`,
         409,
         'DUPLICATE_UNIT_NUMBER'
       );
@@ -300,51 +322,111 @@ export class UnitsService {
         ? 'OCCUPIED'
         : data.status === 'TURNOVER'
         ? 'TURNOVER'
+        : data.status === 'MAINTENANCE'
+        ? 'MAINTENANCE'
         : 'VACANT';
 
-    const unit = await prisma.unit.create({
-      data: {
-        propertyId: data.propertyId,
-        unitTypeId: unitTypeId,
-        unitNumber: data.unitNumber,
-        floor: Number(data.floor) || 1,
-        bedrooms: Number(data.bedrooms) || 1,
-        bathrooms: Number(data.bathrooms) || 1.0,
-        squareFeet: data.squareFeet ? Number(data.squareFeet) : null,
-        baseRent: baseRent,
-        status: unitStatus,
-        readiness: {
-          create: {
-            stage: data.classification === 'New Construction' ? 'MAINTENANCE_REPAIRS' : 'READY_TO_LEASE',
-            cleaningComplete: data.classification !== 'New Construction',
-            paintComplete: data.classification !== 'New Construction',
-            repairComplete: data.classification !== 'New Construction',
-            notes: JSON.stringify({
-              classification: data.classification || (data.unit_status === 'INACTIVE' ? 'New Construction' : 'Completed'),
-              unit_status: data.unit_status || (data.classification === 'New Construction' ? 'INACTIVE' : 'ACTIVE'),
-              ...(Array.isArray(data.bedroomIdentifiers) ? { bedroomIdentifiers: data.bedroomIdentifiers } : {}),
-            }),
+    const bedroomIdentifiers = Array.isArray(data.bedroomIdentifiers) ? data.bedroomIdentifiers : [];
+
+    const notesMeta = {
+      classification: data.classification || (data.unit_status === 'INACTIVE' ? 'New Construction' : 'Completed'),
+      unit_status: data.unit_status || (data.classification === 'New Construction' ? 'INACTIVE' : 'ACTIVE'),
+      gc_delivered_target_date: data.gc_delivered_target_date || null,
+      reserved_flag: !!data.reserved_flag,
+      reserved_by_id: data.reserved_by_id || null,
+      reserve_firstName: data.reserve_firstName || '',
+      reserve_lastName: data.reserve_lastName || '',
+      reserve_email: data.reserve_email || '',
+      reserve_phone: data.reserve_phone || '',
+      tentative_move_in_date: data.tentative_move_in_date || null,
+      bedroomIdentifiers,
+    };
+
+    let unit;
+    if (existing && !existing.isActive) {
+      // Reactivate previously soft-deleted unit
+      unit = await prisma.unit.update({
+        where: { id: existing.id },
+        data: {
+          isActive: true,
+          unitTypeId: unitTypeId,
+          floor: Number(data.floor) || 1,
+          bedrooms: Number(data.bedrooms) || 1,
+          bathrooms: Number(data.bathrooms) || 1.0,
+          squareFeet: data.squareFeet ? Number(data.squareFeet) : null,
+          baseRent: baseRent,
+          status: unitStatus,
+          rentalMode: data.rentalMode || 'FULL_UNIT',
+          reservedFlag: !!data.reserved_flag,
+          reserveFirstName: data.reserve_firstName || null,
+          reserveLastName: data.reserve_lastName || null,
+          reserveEmail: data.reserve_email || null,
+          reservePhone: data.reserve_phone || null,
+          tentativeMoveInDate: data.tentative_move_in_date ? new Date(data.tentative_move_in_date) : null,
+          bedroomDetails: bedroomIdentifiers,
+        },
+        include: { readiness: true, property: true, unitType: true },
+      });
+
+      await prisma.unitReadiness.upsert({
+        where: { unitId: unit.id },
+        create: {
+          unitId: unit.id,
+          stage: data.classification === 'New Construction' ? 'MAINTENANCE_REPAIRS' : 'READY_TO_LEASE',
+          cleaningComplete: data.classification !== 'New Construction',
+          paintComplete: data.classification !== 'New Construction',
+          repairComplete: data.classification !== 'New Construction',
+          notes: JSON.stringify(notesMeta),
+        },
+        update: {
+          stage: data.classification === 'New Construction' ? 'MAINTENANCE_REPAIRS' : 'READY_TO_LEASE',
+          cleaningComplete: data.classification !== 'New Construction',
+          paintComplete: data.classification !== 'New Construction',
+          repairComplete: data.classification !== 'New Construction',
+          notes: JSON.stringify(notesMeta),
+        },
+      });
+    } else {
+      unit = await prisma.unit.create({
+        data: {
+          propertyId: data.propertyId,
+          unitTypeId: unitTypeId,
+          unitNumber: cleanUnitNumber,
+          floor: Number(data.floor) || 1,
+          bedrooms: Number(data.bedrooms) || 1,
+          bathrooms: Number(data.bathrooms) || 1.0,
+          squareFeet: data.squareFeet ? Number(data.squareFeet) : null,
+          baseRent: baseRent,
+          status: unitStatus,
+          rentalMode: data.rentalMode || 'FULL_UNIT',
+          reservedFlag: !!data.reserved_flag,
+          reserveFirstName: data.reserve_firstName || null,
+          reserveLastName: data.reserve_lastName || null,
+          reserveEmail: data.reserve_email || null,
+          reservePhone: data.reserve_phone || null,
+          tentativeMoveInDate: data.tentative_move_in_date ? new Date(data.tentative_move_in_date) : null,
+          bedroomDetails: bedroomIdentifiers,
+          readiness: {
+            create: {
+              stage: data.classification === 'New Construction' ? 'MAINTENANCE_REPAIRS' : 'READY_TO_LEASE',
+              cleaningComplete: data.classification !== 'New Construction',
+              paintComplete: data.classification !== 'New Construction',
+              repairComplete: data.classification !== 'New Construction',
+              notes: JSON.stringify(notesMeta),
+            },
           },
         },
-      },
-      include: { readiness: true, property: true, unitType: true },
-    });
+        include: { readiness: true, property: true, unitType: true },
+      });
+    }
 
     // Increment property totalUnits count
-    await prisma.property.update({
-      where: { id: data.propertyId },
-      data: { totalUnits: { increment: 1 } },
-    });
-
-    await createAuditLog({
-      userId: actorUserId,
-      action: 'CREATE_UNIT',
-      entityType: 'Unit',
-      entityId: unit.id,
-      newData: unit,
-    });
-
-    return unit;
+    try {
+      await prisma.property.update({
+        where: { id: data.propertyId },
+        data: { totalUnits: { increment: 1 } },
+      });
+    } catch (e) {}
 
     await createAuditLog({
       userId: actorUserId,
@@ -363,7 +445,22 @@ export class UnitsService {
     data: any,
     actorUserId?: string
   ) {
-    const oldUnit = await this.getUnitById(id, companyId);
+    const oldUnit = await prisma.unit.findUnique({
+      where: { id },
+      include: {
+        property: { include: { company: { select: { id: true, name: true } } } },
+        unitType: true,
+        readiness: true,
+      },
+    });
+
+    if (!oldUnit) {
+      throw new AppError('Unit not found', 404, 'UNIT_NOT_FOUND');
+    }
+
+    if (companyId && oldUnit.property?.companyId !== companyId) {
+      throw new AppError('Unit not found or access denied', 404, 'UNIT_NOT_FOUND');
+    }
 
     // 1. Resolve unitTypeId if a string name was passed or unitTypeId provided
     let unitTypeId = data.unitTypeId;
@@ -396,7 +493,9 @@ export class UnitsService {
 
     // 3. Prepare clean data for Prisma
     const updateData: any = {};
-    if (data.unitNumber !== undefined) updateData.unitNumber = data.unitNumber;
+    if (data.unitNumber !== undefined && data.unitNumber) {
+      updateData.unitNumber = String(data.unitNumber).trim();
+    }
     if (unitTypeId !== undefined) updateData.unitTypeId = unitTypeId;
     if (data.floor !== undefined) updateData.floor = data.floor !== null ? Number(data.floor) : null;
     if (data.bedrooms !== undefined) updateData.bedrooms = Number(data.bedrooms);
@@ -404,44 +503,59 @@ export class UnitsService {
     if (data.squareFeet !== undefined) updateData.squareFeet = data.squareFeet !== null ? Number(data.squareFeet) : null;
     if (data.baseRent !== undefined) updateData.baseRent = Number(data.baseRent);
     if (unitStatus !== undefined) updateData.status = unitStatus;
-    if (data.propertyId !== undefined && data.propertyId !== oldUnit.propertyId) {
+    if (data.propertyId !== undefined && data.propertyId && data.propertyId !== oldUnit.propertyId) {
       updateData.propertyId = data.propertyId;
     }
+    if (data.rentalMode !== undefined) updateData.rentalMode = data.rentalMode;
+    if (data.reserved_flag !== undefined) updateData.reservedFlag = Boolean(data.reserved_flag);
+    if (data.reserve_firstName !== undefined) updateData.reserveFirstName = data.reserve_firstName || null;
+    if (data.reserve_lastName !== undefined) updateData.reserveLastName = data.reserve_lastName || null;
+    if (data.reserve_email !== undefined) updateData.reserveEmail = data.reserve_email || null;
+    if (data.reserve_phone !== undefined) updateData.reservePhone = data.reserve_phone || null;
+    if (data.tentative_move_in_date !== undefined) updateData.tentativeMoveInDate = data.tentative_move_in_date ? new Date(data.tentative_move_in_date) : null;
+    if (Array.isArray(data.bedroomIdentifiers)) updateData.bedroomDetails = data.bedroomIdentifiers;
 
     const updated = await prisma.unit.update({
       where: { id: oldUnit.id },
       data: updateData,
       include: {
-        property: { include: { company: true } },
+        property: { include: { company: { select: { id: true, name: true } } } },
         unitType: true,
         readiness: true,
       },
     });
 
-    if (data.classification || data.unit_status || data.bedroomIdentifiers) {
-      let currentMeta: any = {};
-      try {
-        currentMeta = JSON.parse(oldUnit.readiness?.notes || '{}');
-      } catch {}
-      const newMeta = {
-        ...currentMeta,
-        ...(data.classification ? { classification: data.classification } : {}),
-        ...(data.unit_status ? { unit_status: data.unit_status } : {}),
-        ...(Array.isArray(data.bedroomIdentifiers) ? { bedroomIdentifiers: data.bedroomIdentifiers } : {}),
-      };
-      await prisma.unitReadiness.upsert({
-        where: { unitId: oldUnit.id },
-        create: {
-          unitId: oldUnit.id,
-          stage: data.classification === 'New Construction' ? 'MAINTENANCE_REPAIRS' : 'READY_TO_LEASE',
-          notes: JSON.stringify(newMeta),
-        },
-        update: {
-          notes: JSON.stringify(newMeta),
-          ...(data.classification === 'New Construction' ? { stage: 'MAINTENANCE_REPAIRS' } : {}),
-        },
-      });
-    }
+    let currentMeta: any = {};
+    try {
+      currentMeta = JSON.parse(oldUnit.readiness?.notes || '{}');
+    } catch {}
+    const newMeta = {
+      ...currentMeta,
+      ...(data.classification ? { classification: data.classification } : {}),
+      ...(data.unit_status ? { unit_status: data.unit_status } : {}),
+      ...(data.gc_delivered_target_date !== undefined ? { gc_delivered_target_date: data.gc_delivered_target_date } : {}),
+      ...(data.reserved_flag !== undefined ? { reserved_flag: data.reserved_flag } : {}),
+      ...(data.reserved_by_id !== undefined ? { reserved_by_id: data.reserved_by_id } : {}),
+      ...(data.reserve_firstName !== undefined ? { reserve_firstName: data.reserve_firstName } : {}),
+      ...(data.reserve_lastName !== undefined ? { reserve_lastName: data.reserve_lastName } : {}),
+      ...(data.reserve_email !== undefined ? { reserve_email: data.reserve_email } : {}),
+      ...(data.reserve_phone !== undefined ? { reserve_phone: data.reserve_phone } : {}),
+      ...(data.tentative_move_in_date !== undefined ? { tentative_move_in_date: data.tentative_move_in_date } : {}),
+      ...(Array.isArray(data.bedroomIdentifiers) ? { bedroomIdentifiers: data.bedroomIdentifiers } : {}),
+    };
+
+    await prisma.unitReadiness.upsert({
+      where: { unitId: oldUnit.id },
+      create: {
+        unitId: oldUnit.id,
+        stage: data.classification === 'New Construction' ? 'MAINTENANCE_REPAIRS' : 'READY_TO_LEASE',
+        notes: JSON.stringify(newMeta),
+      },
+      update: {
+        notes: JSON.stringify(newMeta),
+        ...(data.classification === 'New Construction' ? { stage: 'MAINTENANCE_REPAIRS' } : {}),
+      },
+    });
 
     await createAuditLog({
       userId: actorUserId,
@@ -472,7 +586,21 @@ export class UnitsService {
   }
 
   static async deleteUnit(id: string, companyId?: string | null, actorUserId?: string) {
-    const unit = await this.getUnitById(id, companyId);
+    const unit = await prisma.unit.findUnique({
+      where: { id },
+      include: {
+        property: true,
+        leases: true,
+      },
+    });
+
+    if (!unit) {
+      throw new AppError('Unit not found', 404, 'UNIT_NOT_FOUND');
+    }
+
+    if (companyId && unit.property?.companyId !== companyId) {
+      throw new AppError('Unit not found or access denied', 404, 'UNIT_NOT_FOUND');
+    }
 
     // 1. Terminate/deactivate active leases for this unit
     await prisma.lease.updateMany({
