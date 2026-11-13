@@ -138,6 +138,54 @@ export class AccountingService {
     return result;
   }
 
+  static async createInvoice(data: {
+    leaseId: string;
+    amount?: number;
+    amountDue?: number;
+    dueDate: string | Date;
+    category?: string;
+    description?: string;
+  }) {
+    const lease = await prisma.lease.findUnique({
+      where: { id: data.leaseId },
+      include: { tenant: true },
+    });
+    if (!lease) {
+      throw new AppError('Lease agreement not found', 404);
+    }
+    const tenantId = lease.tenantId;
+    const amount = Number(data.amount ?? data.amountDue ?? lease.rentAmount);
+    const invoiceCount = await prisma.invoice.count();
+    const invoiceNumber = `INV-${new Date().getFullYear()}-${String(invoiceCount + 1).padStart(4, '0')}`;
+
+    return prisma.invoice.create({
+      data: {
+        leaseId: data.leaseId,
+        tenantId,
+        invoiceNumber,
+        amountDue: amount,
+        amountPaid: 0,
+        dueDate: new Date(data.dueDate),
+        status: 'UNPAID',
+        category: data.category || 'RENT',
+      },
+      include: {
+        tenant: { select: { id: true, firstName: true, lastName: true, phone: true, email: true } },
+        lease: {
+          include: {
+            unit: {
+              select: {
+                unitNumber: true,
+                propertyId: true,
+                property: { select: { id: true, name: true } },
+              },
+            },
+          },
+        },
+      },
+    });
+  }
+
   static async listInvoices(filters: {
     companyId?: string | null;
     status?: any;

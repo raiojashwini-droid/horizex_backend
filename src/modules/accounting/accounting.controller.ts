@@ -15,6 +15,15 @@ export const recordPayment = async (req: Request, res: Response, next: NextFunct
   }
 };
 
+export const createInvoice = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const invoice = await AccountingService.createInvoice(req.body);
+    return sendSuccess(res, invoice, 201);
+  } catch (err) {
+    return next(err);
+  }
+};
+
 export const listInvoices = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const isSuperAdmin = req.user?.role === 'SUPER_ADMIN';

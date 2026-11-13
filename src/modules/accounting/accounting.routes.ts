@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import {
   recordPayment,
+  createInvoice,
   listInvoices,
   listPaymentsReceived,
   getOutstandingDues,
@@ -42,6 +43,12 @@ router.get(
   '/invoices',
   authorizeRoles('SUPER_ADMIN', 'COMPANY_ADMIN', 'PROPERTY_MANAGER', 'ACCOUNTANT', 'TENANT', 'OWNER'),
   listInvoices
+);
+
+router.post(
+  '/invoices',
+  authorizeRoles('SUPER_ADMIN', 'COMPANY_ADMIN', 'PROPERTY_MANAGER', 'ACCOUNTANT'),
+  createInvoice
 );
 
 router.get(
