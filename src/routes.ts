@@ -122,7 +122,7 @@ router.use('/admin/overtime', overtimeRouter);
 router.use('/admin/payroll/runs', runsRouter);
 router.use('/admin/payroll', payrollRouter);
 router.use('/admin', coworkersRouter); // Mounts /admin/coworkers and /admin/my-permissions
-router.use('/admin', ownersRouter); // Mounts /admin/owners and /admin/properties/available
+router.use('/admin', ownersRouter); // Mounts /admin/owners
 router.use('/admin/documents', documentsRouter);
 router.use('/admin/email', emailRouter);
 

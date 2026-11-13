@@ -29,29 +29,15 @@ router.get(
         orderBy: { createdAt: 'desc' },
       });
 
-      // Get properties for each owner using raw query
-      const props = await prisma.$queryRaw<Array<{ id: string; name: string; totalUnits: number; ownerId: string }>>`
-        SELECT id, name, "totalUnits", "ownerId" FROM "Property" WHERE "isActive" = true AND "ownerId" IS NOT NULL
-      `;
-
-      const owners = users.map((u) => {
-        const userProps = props.filter((p) => p.ownerId === u.id);
-        const propNames = userProps.map((p) => p.name);
-        const totalUnits = userProps.reduce((sum, p) => sum + (p.totalUnits || 0), 0);
-
-        return {
-          id: u.id,
-          firstName: u.firstName,
-          lastName: u.lastName,
-          name: `${u.firstName} ${u.lastName}`.trim(),
-          email: u.email,
-          phone: u.phone || '+1 (514) 555-0192',
-          properties: propNames,
-          propertyIds: userProps.map((p) => p.id),
-          totalUnits,
-          status: u.isActive ? 'Active' : 'Inactive',
-        };
-      });
+      const owners = users.map((u) => ({
+        id: u.id,
+        firstName: u.firstName,
+        lastName: u.lastName,
+        name: `${u.firstName} ${u.lastName}`.trim(),
+        email: u.email,
+        phone: u.phone || '-',
+        status: u.isActive ? 'Active' : 'Inactive',
+      }));
 
       return res.json({ success: true, data: owners });
     } catch (err: any) {
@@ -68,7 +54,7 @@ router.post(
   authorizeRoles('ADMIN', 'SUPER_ADMIN', 'COMPANY_ADMIN'),
   async (req: Request, res: Response) => {
     try {
-      const { firstName, lastName, email, phone, propertyIds } = req.body;
+      const { firstName, lastName, email, phone } = req.body;
 
       if (!email) {
         return res.status(400).json({ success: false, message: 'Email is required' });
@@ -95,15 +81,6 @@ router.post(
         },
       });
 
-      // Assign properties
-      if (Array.isArray(propertyIds) && propertyIds.length > 0) {
-        for (const propId of propertyIds) {
-          await prisma.$executeRawUnsafe(`
-            UPDATE "Property" SET "ownerId" = '${user.id}' WHERE id = '${propId}';
-          `);
-        }
-      }
-
       return res.status(201).json({
         success: true,
         message: 'Owner created successfully',
@@ -124,7 +101,7 @@ router.put(
   async (req: Request, res: Response) => {
     try {
       const { id } = req.params;
-      const { firstName, lastName, email, phone, propertyIds } = req.body;
+      const { firstName, lastName, email, phone } = req.body;
 
       const user = await prisma.user.update({
         where: { id },
@@ -135,21 +112,6 @@ router.put(
           ...(phone !== undefined && { phone }),
         },
       });
-
-      // Sync assigned properties
-      if (Array.isArray(propertyIds)) {
-        // Unassign current properties
-        await prisma.$executeRawUnsafe(`
-          UPDATE "Property" SET "ownerId" = NULL WHERE "ownerId" = '${id}';
-        `);
-
-        // Assign newly selected properties
-        for (const propId of propertyIds) {
-          await prisma.$executeRawUnsafe(`
-            UPDATE "Property" SET "ownerId" = '${id}' WHERE id = '${propId}';
-          `);
-        }
-      }
 
       return res.json({
         success: true,
@@ -171,11 +133,6 @@ router.delete(
   async (req: Request, res: Response) => {
     try {
       const { id } = req.params;
-
-      // Unassign properties first
-      await prisma.$executeRawUnsafe(`
-        UPDATE "Property" SET "ownerId" = NULL WHERE "ownerId" = '${id}';
-      `);
 
       // Deactivate owner user
       await prisma.user.update({
@@ -207,45 +164,6 @@ router.post(
         },
       },
     });
-  }
-);
-
-// ----------------------------------------------------
-// 6. Available Properties (with owner assignment info)
-// ----------------------------------------------------
-router.get(
-  '/properties/available',
-  authorizeRoles('ADMIN', 'SUPER_ADMIN', 'COMPANY_ADMIN', 'PROPERTY_MANAGER'),
-  async (req: Request, res: Response) => {
-    try {
-      const props = await prisma.$queryRaw<Array<{
-        id: string;
-        name: string;
-        address: string;
-        city: string;
-        totalUnits: number;
-        ownerId: string | null;
-      }>>`
-        SELECT id, name, address, city, "totalUnits", "ownerId" 
-        FROM "Property" 
-        WHERE "isActive" = true
-        ORDER BY name ASC
-      `;
-
-      const mapped = props.map((p) => ({
-        id: p.id,
-        name: p.name,
-        address: p.address,
-        city: p.city,
-        totalUnits: p.totalUnits,
-        ownerId: p.ownerId,
-        ownerIds: p.ownerId ? [p.ownerId] : [],
-      }));
-
-      return res.json({ success: true, data: mapped });
-    } catch (err: any) {
-      return res.status(500).json({ success: false, message: err.message });
-    }
   }
 );
 
