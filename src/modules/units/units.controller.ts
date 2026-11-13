@@ -39,7 +39,7 @@ export const getVacantBedrooms = async (req: Request, res: Response, next: NextF
 
 export const getUnit = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const isSuperAdmin = req.user?.role === 'SUPER_ADMIN';
+    const isSuperAdmin = req.user?.role === 'SUPER_ADMIN' || req.user?.role === 'ADMIN';
     const companyId = isSuperAdmin ? undefined : req.user?.effectiveCompanyId;
 
     const unit = await UnitsService.getUnitById(req.params.id, companyId);
@@ -51,7 +51,7 @@ export const getUnit = async (req: Request, res: Response, next: NextFunction) =
 
 export const createUnit = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const isSuperAdmin = req.user?.role === 'SUPER_ADMIN';
+    const isSuperAdmin = req.user?.role === 'SUPER_ADMIN' || req.user?.role === 'ADMIN';
     const companyId = isSuperAdmin ? undefined : req.user?.effectiveCompanyId;
 
     const unit = await UnitsService.createUnit(req.body, companyId, req.user?.userId);
@@ -88,7 +88,7 @@ export const deleteUnit = async (req: Request, res: Response, next: NextFunction
 
 export const getReadinessDashboard = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const isSuperAdmin = req.user?.role === 'SUPER_ADMIN';
+    const isSuperAdmin = req.user?.role === 'SUPER_ADMIN' || req.user?.role === 'ADMIN';
     const companyId = isSuperAdmin ? undefined : req.user?.effectiveCompanyId;
 
     const dashboard = await UnitsService.getReadinessDashboard(companyId);
@@ -100,7 +100,7 @@ export const getReadinessDashboard = async (req: Request, res: Response, next: N
 
 export const getReadinessBuildings = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const isSuperAdmin = req.user?.role === 'SUPER_ADMIN';
+    const isSuperAdmin = req.user?.role === 'SUPER_ADMIN' || req.user?.role === 'ADMIN';
     const companyId = isSuperAdmin ? undefined : req.user?.effectiveCompanyId;
 
     const buildings = await UnitsService.getReadinessBuildings(companyId);
@@ -112,7 +112,7 @@ export const getReadinessBuildings = async (req: Request, res: Response, next: N
 
 export const getReadinessStats = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const isSuperAdmin = req.user?.role === 'SUPER_ADMIN';
+    const isSuperAdmin = req.user?.role === 'SUPER_ADMIN' || req.user?.role === 'ADMIN';
     const companyId = isSuperAdmin ? undefined : req.user?.effectiveCompanyId;
 
     const stats = await UnitsService.getReadinessStats(companyId);
@@ -124,7 +124,7 @@ export const getReadinessStats = async (req: Request, res: Response, next: NextF
 
 export const updateUnitReadiness = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const isSuperAdmin = req.user?.role === 'SUPER_ADMIN';
+    const isSuperAdmin = req.user?.role === 'SUPER_ADMIN' || req.user?.role === 'ADMIN';
     const companyId = isSuperAdmin ? undefined : req.user?.effectiveCompanyId;
 
     const updated = await UnitsService.updateUnitReadiness(
