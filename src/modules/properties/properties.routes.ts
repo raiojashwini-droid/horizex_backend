@@ -17,33 +17,33 @@ router.use(authenticate);
 
 router.get(
   '/',
-  authorizeRoles('SUPER_ADMIN', 'COMPANY_ADMIN', 'PROPERTY_MANAGER', 'ACCOUNTANT', 'OWNER'),
+  authorizeRoles('SUPER_ADMIN', 'COMPANY_ADMIN', 'PROPERTY_MANAGER', 'ACCOUNTANT', 'OWNER', 'ADMIN'),
   listProperties
 );
 
 router.post(
   '/',
-  authorizeRoles('SUPER_ADMIN', 'COMPANY_ADMIN'),
+  authorizeRoles('SUPER_ADMIN', 'COMPANY_ADMIN', 'ADMIN'),
   validateRequest(createPropertySchema),
   createProperty
 );
 
 router.get(
   '/:id',
-  authorizeRoles('SUPER_ADMIN', 'COMPANY_ADMIN', 'PROPERTY_MANAGER', 'ACCOUNTANT', 'OWNER'),
+  authorizeRoles('SUPER_ADMIN', 'COMPANY_ADMIN', 'PROPERTY_MANAGER', 'ACCOUNTANT', 'OWNER', 'ADMIN'),
   getProperty
 );
 
 router.put(
   '/:id',
-  authorizeRoles('SUPER_ADMIN', 'COMPANY_ADMIN', 'PROPERTY_MANAGER'),
+  authorizeRoles('SUPER_ADMIN', 'COMPANY_ADMIN', 'PROPERTY_MANAGER', 'ADMIN'),
   validateRequest(updatePropertySchema),
   updateProperty
 );
 
 router.delete(
   '/:id',
-  authorizeRoles('SUPER_ADMIN', 'COMPANY_ADMIN'),
+  authorizeRoles('SUPER_ADMIN', 'COMPANY_ADMIN', 'ADMIN'),
   deleteProperty
 );
 

@@ -22,6 +22,9 @@ export class PropertiesService {
         company: {
           select: { id: true, name: true },
         },
+        owner: {
+          select: { id: true, firstName: true, lastName: true },
+        },
         units: {
           where: { isActive: true },
           select: { id: true, status: true, baseRent: true },
@@ -46,6 +49,8 @@ export class PropertiesService {
       return {
         ...prop,
         companyName: prop.company?.name || '',
+        ownerNames: prop.owner ? `${prop.owner.firstName} ${prop.owner.lastName}`.trim() : ((prop as any).ownerNames || ''),
+        ownerIds: prop.ownerId ? [prop.ownerId] : [],
         street: prop.address,
         province: prop.state,
         units: prop.totalUnits || totalUnits || prop.units.length,
@@ -106,7 +111,7 @@ export class PropertiesService {
     const postalCode = rawData.postalCode || 'H1A 1A1';
     const totalUnits = Number(rawData.totalUnits ?? rawData.units ?? 0) || 0;
 
-    const data = {
+    const data: any = {
       companyId: rawData.companyId,
       name: rawData.name,
       address,
@@ -115,6 +120,11 @@ export class PropertiesService {
       postalCode,
       totalUnits,
     };
+
+    const ownerId = rawData.ownerId || (Array.isArray(rawData.ownerIds) && typeof rawData.ownerIds[0] === 'string' && rawData.ownerIds[0].length > 10 ? rawData.ownerIds[0] : undefined);
+    if (ownerId) {
+      data.ownerId = ownerId;
+    }
 
     const property = await prisma.property.create({ data });
 
@@ -135,10 +145,20 @@ export class PropertiesService {
     rawData: any,
     actorUserId?: string
   ) {
-    const oldData = await this.getPropertyById(id, companyId);
+    const oldData = await prisma.property.findUnique({
+      where: { id },
+    });
+
+    if (!oldData) {
+      throw new AppError('Property not found', 404, 'PROPERTY_NOT_FOUND');
+    }
+
+    if (companyId && oldData.companyId !== companyId) {
+      throw new AppError('Property not found', 404, 'PROPERTY_NOT_FOUND');
+    }
 
     const data: any = {};
-    if (rawData.name !== undefined) data.name = rawData.name;
+    if (rawData.name !== undefined && rawData.name) data.name = String(rawData.name).trim();
     if (rawData.address !== undefined) {
       data.address = rawData.address;
     } else if (rawData.street !== undefined || rawData.civicNumber !== undefined) {
@@ -154,7 +174,19 @@ export class PropertiesService {
     if (rawData.totalUnits !== undefined || rawData.units !== undefined) {
       data.totalUnits = Number(rawData.totalUnits ?? rawData.units ?? 0);
     }
-    if (rawData.companyId !== undefined) data.companyId = rawData.companyId;
+    if (rawData.companyId && typeof rawData.companyId === 'string' && rawData.companyId.length > 10) {
+      data.companyId = rawData.companyId;
+    }
+    if (rawData.status !== undefined) {
+      data.isActive = rawData.status === 'Active' || rawData.status === true;
+    }
+    if (rawData.ownerId !== undefined) {
+      const oid = typeof rawData.ownerId === 'string' && rawData.ownerId.length > 10 ? rawData.ownerId : null;
+      data.ownerId = oid;
+    } else if (Array.isArray(rawData.ownerIds)) {
+      const oid = (rawData.ownerIds[0] && typeof rawData.ownerIds[0] === 'string' && rawData.ownerIds[0].length > 10) ? rawData.ownerIds[0] : null;
+      data.ownerId = oid;
+    }
 
     const updated = await prisma.property.update({
       where: { id: oldData.id },
@@ -174,19 +206,35 @@ export class PropertiesService {
   }
 
   static async softDeleteProperty(id: string, companyId: string | null | undefined, actorUserId?: string) {
-    const property = await this.getPropertyById(id, companyId);
-
-    // 1. Terminate any active leases under this property so deletion is not blocked
-    await prisma.lease.updateMany({
-      where: {
-        unit: { propertyId: property.id },
-        status: 'ACTIVE',
-      },
-      data: {
-        status: 'TERMINATED',
-        isActive: false,
+    const property = await prisma.property.findUnique({
+      where: { id },
+      include: {
+        units: { select: { id: true } },
       },
     });
+
+    if (!property) {
+      throw new AppError('Property not found', 404, 'PROPERTY_NOT_FOUND');
+    }
+
+    if (companyId && property.companyId !== companyId) {
+      throw new AppError('Property not found', 404, 'PROPERTY_NOT_FOUND');
+    }
+
+    // 1. Terminate any active leases under this property so deletion is not blocked
+    const unitIds = property.units.map((u) => u.id);
+    if (unitIds.length > 0) {
+      await prisma.lease.updateMany({
+        where: {
+          unitId: { in: unitIds },
+          status: 'ACTIVE',
+        },
+        data: {
+          status: 'TERMINATED',
+          isActive: false,
+        },
+      });
+    }
 
     // 2. Deactivate all units under this property
     await prisma.unit.updateMany({
