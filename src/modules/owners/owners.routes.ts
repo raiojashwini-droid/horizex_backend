@@ -80,7 +80,6 @@ router.post(
         return res.status(400).json({ success: false, message: 'User with this email already exists' });
       }
 
-      const defaultCompany = await prisma.company.findFirst();
       const passwordHash = await bcrypt.hash('123456', 10);
 
       const user = await prisma.user.create({
@@ -91,7 +90,7 @@ router.post(
           lastName: lastName || 'User',
           phone: phone || null,
           role: 'OWNER',
-          companyId: defaultCompany?.id || null,
+          companyId: null,
           isActive: true,
         },
       });
