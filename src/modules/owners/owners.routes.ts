@@ -36,6 +36,8 @@ router.get(
         name: `${u.firstName} ${u.lastName}`.trim(),
         email: u.email,
         phone: u.phone || '-',
+        properties: [],
+        totalUnits: 0,
         status: u.isActive ? 'Active' : 'Inactive',
       }));
 
