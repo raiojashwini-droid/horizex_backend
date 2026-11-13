@@ -4,11 +4,47 @@ import { sendSuccess } from '../../utils/apiResponse.util';
 
 export const listRenewals = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const isSuperAdmin = req.user?.role === 'SUPER_ADMIN';
+    const isSuperAdmin = req.user?.role === 'SUPER_ADMIN' || req.user?.role === 'ADMIN';
     const companyId = isSuperAdmin ? undefined : req.user?.effectiveCompanyId;
 
     const renewals = await LeasesService.listRenewals(companyId);
     return sendSuccess(res, renewals, 200);
+  } catch (err) {
+    return next(err);
+  }
+};
+
+export const getRenewal = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const isSuperAdmin = req.user?.role === 'SUPER_ADMIN' || req.user?.role === 'ADMIN';
+    const companyId = isSuperAdmin ? undefined : req.user?.effectiveCompanyId;
+
+    const renewal = await LeasesService.getRenewalById(req.params.id, companyId);
+    return sendSuccess(res, renewal, 200);
+  } catch (err) {
+    return next(err);
+  }
+};
+
+export const sendRenewalNotice = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const isSuperAdmin = req.user?.role === 'SUPER_ADMIN' || req.user?.role === 'ADMIN';
+    const companyId = isSuperAdmin ? undefined : req.user?.effectiveCompanyId;
+
+    const result = await LeasesService.sendRenewalNotice(req.params.id, companyId, req.user?.userId);
+    return sendSuccess(res, result, 200);
+  } catch (err) {
+    return next(err);
+  }
+};
+
+export const updateRenewalStatus = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const isSuperAdmin = req.user?.role === 'SUPER_ADMIN' || req.user?.role === 'ADMIN';
+    const companyId = isSuperAdmin ? undefined : req.user?.effectiveCompanyId;
+
+    const result = await LeasesService.updateRenewalStatus(req.params.id, companyId, req.body.status, req.user?.userId);
+    return sendSuccess(res, result, 200);
   } catch (err) {
     return next(err);
   }
@@ -78,6 +114,30 @@ export const addMoveInspection = async (req: Request, res: Response, next: NextF
       req.user?.userId
     );
     return sendSuccess(res, inspection, 201);
+  } catch (err) {
+    return next(err);
+  }
+};
+
+export const updateLease = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const isSuperAdmin = req.user?.role === 'SUPER_ADMIN' || req.user?.role === 'ADMIN';
+    const companyId = isSuperAdmin ? undefined : req.user?.effectiveCompanyId;
+
+    const lease = await LeasesService.updateLease(req.params.id, companyId, req.body, req.user?.userId);
+    return sendSuccess(res, lease, 200);
+  } catch (err) {
+    return next(err);
+  }
+};
+
+export const sendLeaseCredentials = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const isSuperAdmin = req.user?.role === 'SUPER_ADMIN' || req.user?.role === 'ADMIN';
+    const companyId = isSuperAdmin ? undefined : req.user?.effectiveCompanyId;
+
+    const result = await LeasesService.sendLeaseCredentials(req.params.id, companyId, req.user?.userId);
+    return sendSuccess(res, result, 200);
   } catch (err) {
     return next(err);
   }

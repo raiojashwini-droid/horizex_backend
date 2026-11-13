@@ -308,6 +308,8 @@ model Lease {
   endDate         DateTime
   rentAmount      Decimal          @db.Decimal(10, 2)
   depositAmount   Decimal          @default(0) @db.Decimal(10, 2)
+  bedroomId       String?
+  leaseType       String?          @default("Full Unit Lease")
   status          LeaseStatus      @default(ACTIVE)
   isActive        Boolean          @default(true)
   renewals        LeaseRenewal[]

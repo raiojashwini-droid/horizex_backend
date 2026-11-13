@@ -2,8 +2,13 @@ import { Router } from 'express';
 import {
   listLeases,
   listRenewals,
+  getRenewal,
+  sendRenewalNotice,
+  updateRenewalStatus,
   getLease,
   createLease,
+  updateLease,
+  sendLeaseCredentials,
   renewLease,
   addMoveInspection,
   deleteLease,
@@ -23,8 +28,26 @@ router.use(authenticate);
 
 router.get(
   '/renewals',
-  authorizeRoles('SUPER_ADMIN', 'COMPANY_ADMIN', 'PROPERTY_MANAGER', 'ACCOUNTANT', 'OWNER'),
+  authorizeRoles('SUPER_ADMIN', 'COMPANY_ADMIN', 'PROPERTY_MANAGER', 'ACCOUNTANT', 'OWNER', 'ADMIN'),
   listRenewals
+);
+
+router.get(
+  '/renewals/:id',
+  authorizeRoles('SUPER_ADMIN', 'COMPANY_ADMIN', 'PROPERTY_MANAGER', 'ACCOUNTANT', 'OWNER', 'ADMIN'),
+  getRenewal
+);
+
+router.post(
+  '/renewals/:id/notice',
+  authorizeRoles('SUPER_ADMIN', 'COMPANY_ADMIN', 'PROPERTY_MANAGER', 'ADMIN'),
+  sendRenewalNotice
+);
+
+router.put(
+  '/renewals/:id',
+  authorizeRoles('SUPER_ADMIN', 'COMPANY_ADMIN', 'PROPERTY_MANAGER', 'ADMIN'),
+  updateRenewalStatus
 );
 
 router.get(
@@ -44,6 +67,18 @@ router.get(
   '/:id',
   authorizeRoles('SUPER_ADMIN', 'COMPANY_ADMIN', 'PROPERTY_MANAGER', 'ACCOUNTANT', 'TENANT', 'OWNER'),
   getLease
+);
+
+router.put(
+  '/:id',
+  authorizeRoles('SUPER_ADMIN', 'COMPANY_ADMIN', 'PROPERTY_MANAGER'),
+  updateLease
+);
+
+router.post(
+  '/:id/send-credentials',
+  authorizeRoles('SUPER_ADMIN', 'COMPANY_ADMIN', 'PROPERTY_MANAGER'),
+  sendLeaseCredentials
 );
 
 router.post(

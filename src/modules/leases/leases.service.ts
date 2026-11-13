@@ -8,7 +8,7 @@ export class LeasesService {
     if (companyId) {
       where.lease = { unit: { property: { companyId } } };
     }
-    return prisma.leaseRenewal.findMany({
+    const renewals = await prisma.leaseRenewal.findMany({
       where,
       include: {
         lease: {
@@ -18,13 +18,49 @@ export class LeasesService {
               select: {
                 id: true,
                 unitNumber: true,
-                property: { select: { id: true, name: true } },
+                property: { select: { id: true, name: true, company: { select: { id: true, name: true } } } },
               },
             },
           },
         },
       },
       orderBy: { noticeSentDate: 'desc' },
+    });
+
+    const formatDate = (d: Date | string | null | undefined) => {
+      if (!d) return '-';
+      const date = new Date(d);
+      return date.toLocaleDateString('en-CA', { month: 'short', day: '2-digit', year: 'numeric' });
+    };
+
+    return renewals.map((r: any) => {
+      const tenant = r.lease?.tenant;
+      const tenantName = tenant ? `${tenant.firstName} ${tenant.lastName}`.trim() : 'Unknown';
+      const property = r.lease?.unit?.property;
+      const propertyName = property?.name || 'Unknown';
+      const unitNumber = r.lease?.unit?.unitNumber || '-';
+      const companyName = property?.company?.name || 'Horizex Real Estate Corp';
+
+      return {
+        id: r.id,
+        leaseId: r.leaseId,
+        propertyId: property?.id,
+        propertyName,
+        unitNumber,
+        tenantName,
+        tenantEmail: tenant?.email || '',
+        tenantPhone: tenant?.phone || '',
+        companyName,
+        leaseEnd: formatDate(r.lease?.endDate),
+        renewalDueDate: formatDate(r.noticeSentDate),
+        proposedRent: Number(r.proposedRent),
+        proposedEndDate: formatDate(r.proposedEndDate),
+        status: r.status,
+        noticeSent: Boolean(r.noticeSentDate),
+        noticeSentDate: r.noticeSentDate ? formatDate(r.noticeSentDate) : null,
+        createdAt: r.noticeSentDate,
+        lease: r.lease,
+      };
     });
   }
 
@@ -72,12 +108,40 @@ export class LeasesService {
       return date.toLocaleDateString('en-CA', { month: 'short', day: '2-digit', year: 'numeric' });
     };
 
+    const now = new Date();
+
     return leases.map((l) => {
       const tenantName = l.tenant ? `${l.tenant.firstName} ${l.tenant.lastName}`.trim() : 'Unknown';
       const buildingName = l.unit?.property?.name || 'Unknown';
       const unitNumber = l.unit?.unitNumber || '-';
       const term = `${formatDate(l.startDate)} - ${formatDate(l.endDate)}`;
-      const status = l.status === 'ACTIVE' ? 'Active' : 'Expired';
+
+      // Expiry calculation: end date extends through the end of the day (23:59:59.999 UTC)
+      const endDateTime = new Date(l.endDate);
+      endDateTime.setUTCHours(23, 59, 59, 999);
+      const isExpired = now.getTime() > endDateTime.getTime();
+
+      let status = 'Active';
+      if (l.status === 'TERMINATED') {
+        status = 'Terminated';
+      } else if (isExpired || l.status === 'EXPIRED') {
+        status = 'Expired';
+        // Auto-sync status in DB if still ACTIVE
+        if (l.status === 'ACTIVE') {
+          prisma.lease.update({ where: { id: l.id }, data: { status: 'EXPIRED' } }).catch(() => { });
+          prisma.lease.count({ where: { unitId: l.unitId, status: 'ACTIVE', id: { not: l.id }, isActive: true } })
+            .then((count) => {
+              if (count === 0) {
+                prisma.unit.update({ where: { id: l.unitId }, data: { status: 'VACANT' } }).catch(() => { });
+              }
+            }).catch(() => { });
+        }
+      }
+
+      const lAny = l as any;
+      const isBedroomLease = Boolean(lAny.bedroomId) || lAny.leaseType === 'Bedroom Lease';
+      const leaseType = isBedroomLease ? 'Bedroom Lease' : 'Full Unit Lease';
+      const bedroom = lAny.bedroomId ? `Bedroom ${lAny.bedroomId}` : (l.unit?.bedrooms ? `${l.unit.bedrooms} Bed` : '-');
 
       return {
         ...l,
@@ -89,12 +153,12 @@ export class LeasesService {
         building: buildingName,
         unit: unitNumber,
         unitNumber,
-        bedroom: l.unit?.bedrooms ? `${l.unit.bedrooms} Bed` : '-',
+        bedroom,
         term,
         monthlyRent: Number(l.rentAmount),
         rentAmount: Number(l.rentAmount),
         status,
-        leaseType: 'Full Unit Lease',
+        leaseType,
         isCredentialsSent: true,
       };
     });
@@ -134,6 +198,9 @@ export class LeasesService {
       monthlyRent?: number;
       depositAmount?: number;
       securityDeposit?: number;
+      bedroomId?: string | number | null;
+      leaseType?: string;
+      isFullUnitLease?: boolean;
       [key: string]: any;
     },
     companyId?: string | null,
@@ -173,9 +240,16 @@ export class LeasesService {
       throw new AppError('Invalid start or end date format', 400, 'INVALID_LEASE_DATES');
     }
 
+    // Set end of day so lease remains active through the entire end date
+    end.setUTCHours(23, 59, 59, 999);
+
     if (end <= start) {
       throw new AppError('Lease end date must be after start date', 400, 'INVALID_LEASE_DATES');
     }
+
+    const isBedroom = Boolean(data.bedroomId) || data.isFullUnitLease === false || data.leaseType === 'Bedroom Lease';
+    const leaseType = isBedroom ? 'Bedroom Lease' : 'Full Unit Lease';
+    const bedroomId = data.bedroomId ? String(data.bedroomId) : null;
 
     // ATOMIC TRANSACTION:
     // 1. Create Lease
@@ -190,8 +264,10 @@ export class LeasesService {
           endDate: end,
           rentAmount: rentAmount,
           depositAmount: depositAmount,
+          bedroomId: bedroomId,
+          leaseType: leaseType,
           status: 'ACTIVE',
-        },
+        } as any,
       });
 
       const newActiveCount = unit.leases.length + 1;
@@ -231,6 +307,87 @@ export class LeasesService {
     return result;
   }
 
+  static async updateLease(
+    id: string,
+    companyId: string | null | undefined,
+    data: {
+      monthlyRent?: number;
+      rentAmount?: number;
+      startDate?: string;
+      endDate?: string;
+      firstName?: string;
+      lastName?: string;
+    },
+    actorUserId?: string
+  ) {
+    const lease = await this.getLeaseById(id, companyId);
+
+    const updateData: any = {};
+    if (data.monthlyRent !== undefined || data.rentAmount !== undefined) {
+      updateData.rentAmount = Number(data.monthlyRent ?? data.rentAmount);
+    }
+    if (data.startDate) {
+      updateData.startDate = new Date(data.startDate);
+    }
+    if (data.endDate) {
+      const end = new Date(data.endDate);
+      end.setUTCHours(23, 59, 59, 999);
+      updateData.endDate = end;
+    }
+
+    // If tenant name is updated
+    if (data.firstName || data.lastName) {
+      await prisma.tenant.update({
+        where: { id: lease.tenantId },
+        data: {
+          ...(data.firstName ? { firstName: data.firstName.trim() } : {}),
+          ...(data.lastName ? { lastName: data.lastName.trim() } : {}),
+        },
+      });
+    }
+
+    const updated = await prisma.lease.update({
+      where: { id: lease.id },
+      data: updateData,
+      include: {
+        tenant: true,
+        unit: { include: { property: true } },
+      },
+    });
+
+    await createAuditLog({
+      userId: actorUserId,
+      action: 'UPDATE_LEASE',
+      entityType: 'Lease',
+      entityId: id,
+      oldData: lease,
+      newData: updated,
+    });
+
+    return updated;
+  }
+
+  static async sendLeaseCredentials(
+    id: string,
+    companyId: string | null | undefined,
+    actorUserId?: string
+  ) {
+    const lease = await this.getLeaseById(id, companyId);
+
+    await createAuditLog({
+      userId: actorUserId,
+      action: 'SEND_LEASE_CREDENTIALS',
+      entityType: 'Lease',
+      entityId: id,
+      newData: { tenantId: lease.tenantId, email: lease.tenant.email, phone: lease.tenant.phone },
+    });
+
+    return {
+      success: true,
+      message: `Credentials sent successfully to ${lease.tenant.email || lease.tenant.phone || 'tenant'}`,
+    };
+  }
+
   static async renewLease(
     leaseId: string,
     companyId: string | null | undefined,
@@ -239,11 +396,16 @@ export class LeasesService {
   ) {
     const lease = await this.getLeaseById(leaseId, companyId);
 
+    const end = new Date(data.proposedEndDate);
+    if (!isNaN(end.getTime())) {
+      end.setUTCHours(23, 59, 59, 999);
+    }
+
     const renewal = await prisma.leaseRenewal.create({
       data: {
         leaseId: lease.id,
-        proposedRent: data.proposedRent,
-        proposedEndDate: new Date(data.proposedEndDate),
+        proposedRent: Number(data.proposedRent),
+        proposedEndDate: end,
         noticeSentDate: new Date(),
         status: 'OFFER_SENT',
       },
@@ -258,6 +420,102 @@ export class LeasesService {
     });
 
     return renewal;
+  }
+
+  static async getRenewalById(id: string, companyId?: string | null) {
+    const where: any = { id };
+    if (companyId) {
+      where.lease = { unit: { property: { companyId } } };
+    }
+
+    const renewal = await prisma.leaseRenewal.findFirst({
+      where,
+      include: {
+        lease: {
+          include: {
+            tenant: true,
+            unit: { include: { property: { include: { company: true } } } },
+          },
+        },
+      },
+    });
+
+    if (!renewal) {
+      throw new AppError('Lease renewal not found', 404, 'RENEWAL_NOT_FOUND');
+    }
+
+    const tenant = renewal.lease?.tenant;
+    const property = renewal.lease?.unit?.property;
+
+    return {
+      ...renewal,
+      tenantName: tenant ? `${tenant.firstName} ${tenant.lastName}`.trim() : 'Unknown',
+      propertyName: property?.name || 'Unknown',
+      unitNumber: renewal.lease?.unit?.unitNumber || '-',
+      companyName: property?.company?.name || 'Horizex Real Estate Corp',
+    };
+  }
+
+  static async sendRenewalNotice(id: string, companyId?: string | null, actorUserId?: string) {
+    const renewal = await this.getRenewalById(id, companyId);
+
+    const updated = await prisma.leaseRenewal.update({
+      where: { id: renewal.id },
+      data: {
+        noticeSentDate: new Date(),
+        status: 'OFFER_SENT',
+      },
+    });
+
+    await createAuditLog({
+      userId: actorUserId,
+      action: 'SEND_RENEWAL_NOTICE',
+      entityType: 'LeaseRenewal',
+      entityId: id,
+      newData: updated,
+    });
+
+    return {
+      success: true,
+      message: 'Renewal notice sent successfully',
+      data: updated,
+    };
+  }
+
+  static async updateRenewalStatus(
+    id: string,
+    companyId: string | null | undefined,
+    status: string,
+    actorUserId?: string
+  ) {
+    const renewal = await this.getRenewalById(id, companyId);
+
+    const validStatus = status as any;
+    const updated = await prisma.leaseRenewal.update({
+      where: { id: renewal.id },
+      data: { status: validStatus },
+    });
+
+    if (status === 'ACCEPTED') {
+      await prisma.lease.update({
+        where: { id: renewal.leaseId },
+        data: {
+          endDate: renewal.proposedEndDate,
+          rentAmount: renewal.proposedRent,
+          status: 'ACTIVE',
+        },
+      });
+    }
+
+    await createAuditLog({
+      userId: actorUserId,
+      action: 'UPDATE_RENEWAL_STATUS',
+      entityType: 'LeaseRenewal',
+      entityId: id,
+      newData: updated,
+    });
+
+    return updated;
   }
 
   static async addMoveInspection(
@@ -306,7 +564,7 @@ export class LeasesService {
         where: { id: lease.unitId },
         data: { status: 'VACANT' },
       });
-    } catch (e) {}
+    } catch (e) { }
 
     // 2. Soft delete or delete lease
     let deleted;
@@ -333,4 +591,3 @@ export class LeasesService {
     return { message: 'Lease deleted successfully' };
   }
 }
-
