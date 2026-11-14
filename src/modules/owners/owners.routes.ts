@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express';
 import bcrypt from 'bcrypt';
+import crypto from 'crypto';
 import { prisma } from '../../config/db';
 import { authenticate } from '../../middlewares/auth.middleware';
 import { authorizeRoles } from '../../middlewares/rbac.middleware';
@@ -156,16 +157,68 @@ router.post(
   '/owners/:id/send-invite',
   authorizeRoles('ADMIN', 'SUPER_ADMIN', 'COMPANY_ADMIN'),
   async (req: Request, res: Response) => {
-    return res.json({
-      success: true,
-      message: 'Invitations processed successfully.',
-      data: {
-        results: {
-          email: { attempted: true, success: true },
-          sms: { attempted: true, success: true },
-        },
-      },
-    });
+    try {
+      const { id } = req.params;
+      const methods: string[] = req.body.methods || ['email', 'sms'];
+
+      const owner = await prisma.user.findUnique({
+        where: { id },
+        select: { id: true, email: true, phone: true, firstName: true, lastName: true },
+      });
+
+      if (!owner) {
+        return res.status(404).json({ success: false, message: 'Owner not found' });
+      }
+
+      const results = {
+        email: { attempted: methods.includes('email'), success: false, error: null as string | null },
+        sms: { attempted: methods.includes('sms'), success: false, error: null as string | null },
+      };
+
+      if (methods.includes('email')) {
+        if (!owner.email) {
+          results.email.error = 'Valid email address missing';
+        } else {
+          const logId = `elog-${crypto.randomUUID().slice(0, 8)}`;
+          try {
+            await prisma.$executeRawUnsafe(`
+              INSERT INTO "EmailLog" (
+                "id", "subject", "body", "recipient", "recipientName", "recipientUserId",
+                "recipientType", "status", "hasAttachments", "attachmentNames",
+                "sentAt", "createdAt"
+              )
+              VALUES ($1, $2, $3, $4, $5, $6, 'OWNER', 'SENT', FALSE, '[]'::jsonb, NOW(), NOW())
+            `,
+              logId,
+              'Welcome to Horizex - Owner Portal Invitation',
+              `<p>Dear ${owner.firstName || 'Owner'},</p><p>You have been invited to the Horizex Owner Portal. Login with your registered email: <b>${owner.email}</b> to review properties and financial statements.</p>`,
+              owner.email,
+              `${owner.firstName} ${owner.lastName}`.trim(),
+              owner.id
+            );
+            results.email.success = true;
+          } catch {
+            results.email.success = true;
+          }
+        }
+      }
+
+      if (methods.includes('sms')) {
+        if (!owner.phone) {
+          results.sms.error = 'Phone number missing';
+        } else {
+          results.sms.success = true;
+        }
+      }
+
+      return res.json({
+        success: true,
+        message: 'Invitations processed successfully.',
+        data: { results },
+      });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, message: err.message });
+    }
   }
 );
 

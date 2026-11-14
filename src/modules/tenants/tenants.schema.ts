@@ -26,27 +26,27 @@ export const updateTenantSchema = z.object({
 
 export const createVehicleSchema = z.object({
   body: z.object({
-    tenantId: z.string().uuid('Invalid tenant ID'),
-    unitId: z.string().uuid('Invalid unit ID').optional(),
+    tenantId: z.string().min(1, 'Tenant ID is required'),
+    unitId: z.string().uuid('Invalid unit ID').or(z.literal('')).optional().nullable(),
     make: z.string().min(1, 'Make is required'),
     model: z.string().min(1, 'Model is required'),
-    color: z.string().optional(),
+    color: z.string().optional().nullable(),
     licensePlate: z.string().min(2, 'License plate is required').toUpperCase(),
-    permitNumber: z.string().optional(),
+    permitNumber: z.string().optional().nullable(),
   }).passthrough(),
 });
 
 export const updateVehicleSchema = z.object({
   params: z.object({
-    id: z.string().uuid('Invalid vehicle ID'),
+    id: z.string().min(1, 'Invalid vehicle ID'),
   }),
   body: z.object({
-    tenantId: z.string().uuid('Invalid tenant ID').optional(),
-    unitId: z.string().uuid('Invalid unit ID').optional(),
+    tenantId: z.string().or(z.literal('')).optional().nullable(),
+    unitId: z.string().uuid('Invalid unit ID').or(z.literal('')).optional().nullable(),
     make: z.string().min(1, 'Make is required').optional(),
     model: z.string().min(1, 'Model is required').optional(),
-    color: z.string().optional(),
+    color: z.string().optional().nullable(),
     licensePlate: z.string().min(2, 'License plate is required').toUpperCase().optional(),
-    permitNumber: z.string().optional(),
+    permitNumber: z.string().optional().nullable(),
   }).passthrough(),
 });

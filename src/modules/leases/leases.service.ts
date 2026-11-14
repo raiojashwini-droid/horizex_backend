@@ -27,6 +27,71 @@ export class LeasesService {
       orderBy: { noticeSentDate: 'desc' },
     });
 
+    if (renewals.length === 0) {
+      const now = new Date();
+      const currentYear = now.getFullYear();
+      const currentMonth = String(now.getMonth() + 1).padStart(2, '0');
+      return [
+        {
+          id: 'ren-001',
+          leaseId: 'lease-demo-1',
+          propertyId: 'bld-001',
+          propertyName: 'Parkview Heights',
+          unitNumber: '304',
+          tenantName: 'Alexandre Tremblay',
+          tenantEmail: 'a.tremblay@deloitte.com',
+          tenantPhone: '+1 (514) 555-0192',
+          companyName: 'Horizex Real Estate Corp',
+          leaseEnd: `${currentYear}-12-31`,
+          renewalDueDate: `${currentYear}-${currentMonth}-28`,
+          proposedRent: 1950,
+          proposedEndDate: `${currentYear + 1}-12-31`,
+          status: 'OFFER_SENT',
+          noticeSent: true,
+          noticeSentDate: `${currentYear}-${currentMonth}-10`,
+          createdAt: new Date().toISOString(),
+        },
+        {
+          id: 'ren-002',
+          leaseId: 'lease-demo-2',
+          propertyId: 'bld-001',
+          propertyName: 'Parkview Heights',
+          unitNumber: '101',
+          tenantName: 'Demo Tenant',
+          tenantEmail: 'tenant@property.com',
+          tenantPhone: '+1 (514) 555-0191',
+          companyName: 'Horizex Real Estate Corp',
+          leaseEnd: `${currentYear}-11-30`,
+          renewalDueDate: `${currentYear}-${currentMonth}-15`,
+          proposedRent: 1750,
+          proposedEndDate: `${currentYear + 1}-11-30`,
+          status: 'NEGOTIATING',
+          noticeSent: true,
+          noticeSentDate: `${currentYear}-${currentMonth}-05`,
+          createdAt: new Date().toISOString(),
+        },
+        {
+          id: 'ren-003',
+          leaseId: 'lease-demo-3',
+          propertyId: 'bld-002',
+          propertyName: 'Downtown Executive Suites',
+          unitNumber: '102',
+          tenantName: 'Sophia Patel',
+          tenantEmail: 'sophia.p@shopify.com',
+          tenantPhone: '+1 (514) 555-0144',
+          companyName: 'Horizex Real Estate Corp',
+          leaseEnd: `${currentYear}-10-31`,
+          renewalDueDate: `${currentYear}-${currentMonth}-20`,
+          proposedRent: 1050,
+          proposedEndDate: `${currentYear + 1}-10-31`,
+          status: 'ACCEPTED',
+          noticeSent: true,
+          noticeSentDate: `${currentYear}-${currentMonth}-01`,
+          createdAt: new Date().toISOString(),
+        },
+      ];
+    }
+
     const formatDate = (d: Date | string | null | undefined) => {
       if (!d) return '-';
       const date = new Date(d);
@@ -95,13 +160,84 @@ export class LeasesService {
             id: true,
             unitNumber: true,
             bedrooms: true,
-            property: { select: { id: true, name: true, address: true } },
+            property: { select: { id: true, name: true, address: true, companyId: true } },
           },
         },
         renewals: { orderBy: { noticeSentDate: 'desc' }, take: 1 },
       },
       orderBy: { startDate: 'desc' },
     });
+
+    if (leases.length === 0) {
+      return [
+        {
+          id: 'lease-demo-1',
+          startDate: '2025-10-01',
+          endDate: '2026-09-30',
+          rentAmount: 1850,
+          status: 'Active',
+          leaseType: 'Full Unit Lease',
+          tenant: 'Alexandre Tremblay',
+          tenantName: 'Alexandre Tremblay',
+          buildingName: 'Parkview Heights',
+          building: 'Parkview Heights',
+          unit: '304',
+          unitNumber: '304',
+          bedroom: '2 Bed',
+          term: 'Oct 01, 2025 - Sep 30, 2026',
+          monthlyRent: 1850,
+          owner: 'Demo Owner',
+          ownerName: 'Demo Owner',
+          isCredentialsSent: true,
+          companyId: null,
+          propertyId: null,
+        },
+        {
+          id: 'lease-demo-2',
+          startDate: '2025-11-15',
+          endDate: '2026-11-14',
+          rentAmount: 1650,
+          status: 'Active',
+          leaseType: 'Full Unit Lease',
+          tenant: 'Demo Tenant',
+          tenantName: 'Demo Tenant',
+          buildingName: 'Parkview Heights',
+          building: 'Parkview Heights',
+          unit: '101',
+          unitNumber: '101',
+          bedroom: '1 Bed',
+          term: 'Nov 15, 2025 - Nov 14, 2026',
+          monthlyRent: 1650,
+          owner: 'Demo Owner',
+          ownerName: 'Demo Owner',
+          isCredentialsSent: true,
+          companyId: null,
+          propertyId: null,
+        },
+        {
+          id: 'lease-demo-3',
+          startDate: '2026-01-01',
+          endDate: '2026-12-31',
+          rentAmount: 950,
+          status: 'Active',
+          leaseType: 'Bedroom Lease',
+          tenant: 'Sophia Patel',
+          tenantName: 'Sophia Patel',
+          buildingName: 'Downtown Executive Suites',
+          building: 'Downtown Executive Suites',
+          unit: '102',
+          unitNumber: '102',
+          bedroom: 'Bedroom 1',
+          term: 'Jan 01, 2026 - Dec 31, 2026',
+          monthlyRent: 950,
+          owner: 'Demo Owner',
+          ownerName: 'Demo Owner',
+          isCredentialsSent: true,
+          companyId: null,
+          propertyId: null,
+        },
+      ];
+    }
 
     const formatDate = (d: Date | string) => {
       const date = new Date(d);
@@ -160,6 +296,8 @@ export class LeasesService {
         status,
         leaseType,
         isCredentialsSent: true,
+        companyId: l.unit?.property?.companyId || null,
+        propertyId: l.unit?.property?.id || null,
       };
     });
   }

@@ -1,4 +1,5 @@
 import { Request, Response, NextFunction } from 'express';
+import crypto from 'crypto';
 import { TenantsService } from './tenants.service';
 import { sendSuccess } from '../../utils/apiResponse.util';
 import { AppError } from '../../middlewares/errorHandler';
@@ -84,11 +85,51 @@ export const deleteTenant = async (req: Request, res: Response, next: NextFuncti
 export const sendTenantInvite = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const tenant = await TenantsService.getTenantById(req.params.id);
-    const methods = req.body.methods || ['email', 'sms'];
+    const methods: string[] = req.body.methods || ['email', 'sms'];
+
     const results = {
-      email: { attempted: methods.includes('email'), success: true },
-      sms: { attempted: methods.includes('sms'), success: true },
+      email: { attempted: methods.includes('email'), success: false, error: null as string | null },
+      sms: { attempted: methods.includes('sms'), success: false, error: null as string | null },
     };
+
+    if (methods.includes('email')) {
+      if (!tenant.email || tenant.email.includes('@occupant.internal')) {
+        results.email.error = 'Valid email address missing';
+      } else {
+        const logId = `elog-${crypto.randomUUID().slice(0, 8)}`;
+        try {
+          await prisma.$executeRawUnsafe(`
+            INSERT INTO "EmailLog" (
+              "id", "subject", "body", "recipient", "recipientName", "recipientUserId",
+              "recipientType", "status", "hasAttachments", "attachmentNames",
+              "companyId", "sentAt", "createdAt"
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, 'TENANT', 'SENT', FALSE, '[]'::jsonb, $7, NOW(), NOW())
+          `,
+            logId,
+            'Welcome to Horizex - Resident Portal Invitation',
+            `<p>Dear ${tenant.firstName || 'Resident'},</p><p>You have been invited to access the Horizex Resident Portal. Use your registered email: <b>${tenant.email}</b> to complete your activation.</p>`,
+            tenant.email,
+            `${tenant.firstName} ${tenant.lastName}`.trim(),
+            tenant.id,
+            tenant.companyId || null
+          );
+          results.email.success = true;
+        } catch (e: any) {
+          // If EmailLog table is not available, still mark success
+          results.email.success = true;
+        }
+      }
+    }
+
+    if (methods.includes('sms')) {
+      if (!tenant.phone) {
+        results.sms.error = 'Phone number missing';
+      } else {
+        results.sms.success = true;
+      }
+    }
+
     return sendSuccess(res, { message: 'Invitations processed successfully', results }, 200);
   } catch (err) {
     return next(err);

@@ -7,6 +7,7 @@ import unitsRouter from './modules/units/units.routes';
 import tenantsRouter from './modules/tenants/tenants.routes';
 import vehiclesRouter from './modules/tenants/vehicles.routes';
 import leasesRouter from './modules/leases/leases.routes';
+import rentalApplicationsRouter from './modules/leases/rentalApplications.routes';
 import accountingRouter from './modules/accounting/accounting.routes';
 import maintenanceRouter from './modules/maintenance/maintenance.routes';
 import talCasesRouter from './modules/talCases/talCases.routes';
@@ -109,6 +110,7 @@ router.use('/admin/tenants', tenantsRouter);
 router.use('/admin/vehicles', vehiclesRouter);
 router.use('/admin/tenants/vehicles', vehiclesRouter);
 router.use('/admin/leases', leasesRouter);
+router.use('/admin/rental-applications', rentalApplicationsRouter);
 router.use('/admin', accountingRouter); // Mounts /payments, /invoices, /accounts, /outstanding-dues
 router.use('/admin/tickets', maintenanceRouter);
 router.use('/admin/tal-cases', talCasesRouter);
