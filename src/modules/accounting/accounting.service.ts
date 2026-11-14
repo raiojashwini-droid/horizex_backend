@@ -15,30 +15,31 @@ export class AccountingService {
   static async recordPayment(
     data: {
       invoiceId?: string;
-      tenantId: string;
-      bankAccountId: string;
+      tenantId?: string;
+      bankAccountId?: string;
       amount: number;
-      paymentMethod: any;
+      paymentMethod?: any;
       referenceId?: string;
     },
     companyId?: string | null,
     actorUserId?: string
   ) {
-    const bankAccount = await prisma.bankAccount.findFirst({
-      where: {
-        id: data.bankAccountId,
-        isActive: true,
-        ...(companyId ? { companyId } : {}),
-      },
-    });
+    let invoiceToSettle: any = null;
+    if (data.invoiceId) {
+      invoiceToSettle = await prisma.invoice.findUnique({
+        where: { id: data.invoiceId },
+        include: { tenant: true },
+      });
+    }
 
-    if (!bankAccount) {
-      throw new AppError('Bank account not found or access denied', 404, 'BANK_ACCOUNT_NOT_FOUND');
+    const resolvedTenantId = data.tenantId || invoiceToSettle?.tenantId;
+    if (!resolvedTenantId) {
+      throw new AppError('Tenant not found or access denied', 404, 'TENANT_NOT_FOUND');
     }
 
     const tenant = await prisma.tenant.findFirst({
       where: {
-        id: data.tenantId,
+        id: resolvedTenantId,
         isActive: true,
         ...(companyId ? { companyId } : {}),
       },
@@ -48,16 +49,49 @@ export class AccountingService {
       throw new AppError('Tenant not found or access denied', 404, 'TENANT_NOT_FOUND');
     }
 
-    let invoiceToSettle: any = null;
-    if (data.invoiceId) {
-      invoiceToSettle = await prisma.invoice.findUnique({
-        where: { id: data.invoiceId },
+    let bankAccount = null;
+    if (data.bankAccountId) {
+      bankAccount = await prisma.bankAccount.findFirst({
+        where: {
+          id: data.bankAccountId,
+          isActive: true,
+          ...(companyId ? { companyId } : {}),
+        },
       });
-    } else {
+    }
+
+    if (!bankAccount) {
+      bankAccount = await prisma.bankAccount.findFirst({
+        where: {
+          isActive: true,
+          ...(companyId || tenant.companyId ? { companyId: companyId || tenant.companyId } : {}),
+        },
+      }) || await prisma.bankAccount.findFirst({ where: { isActive: true } });
+    }
+
+    if (!bankAccount) {
+      bankAccount = await prisma.bankAccount.create({
+        data: {
+          companyId: tenant.companyId,
+          bankName: 'Operating Account',
+          accountName: 'General Operating Account',
+          accountNumber: '0144-8829-10',
+          balance: 0,
+          isActive: true,
+        },
+      });
+    }
+
+    // Normalize paymentMethod enum
+    const methodStr = String(data.paymentMethod || '').toUpperCase().replace(/[\s-]/g, '_');
+    const validMethods = ['INTERAC_E_TRANSFER', 'CREDIT_CARD', 'PRE_AUTHORIZED_DEBIT', 'BANK_TRANSFER', 'CHEQUE', 'CASH'];
+    const resolvedMethod: any = validMethods.includes(methodStr) ? methodStr : 'INTERAC_E_TRANSFER';
+
+    if (!invoiceToSettle) {
       // If invoiceId not specified, find oldest unpaid/partially paid invoice
       invoiceToSettle = await prisma.invoice.findFirst({
         where: {
-          tenantId: data.tenantId,
+          tenantId: tenant.id,
           status: { in: ['UNPAID', 'PARTIALLY_PAID', 'OVERDUE'] },
         },
         orderBy: { dueDate: 'asc' },
@@ -69,10 +103,10 @@ export class AccountingService {
       const payment = await tx.payment.create({
         data: {
           invoiceId: invoiceToSettle?.id || null,
-          tenantId: data.tenantId,
-          bankAccountId: data.bankAccountId,
+          tenantId: tenant.id,
+          bankAccountId: bankAccount.id,
           amount: data.amount,
-          paymentMethod: data.paymentMethod,
+          paymentMethod: resolvedMethod,
           status: 'COMPLETED',
           referenceId: data.referenceId,
           paidAt: new Date(),
@@ -81,7 +115,7 @@ export class AccountingService {
 
       // 2. Credit Bank Account
       await tx.bankAccount.update({
-        where: { id: data.bankAccountId },
+        where: { id: bankAccount.id },
         data: {
           balance: { increment: data.amount },
         },
@@ -106,7 +140,7 @@ export class AccountingService {
           if (excess > 0) {
             await tx.tenantCredit.create({
               data: {
-                tenantId: data.tenantId,
+                tenantId: tenant.id,
                 amount: excess,
                 reason: `Overpayment on invoice ${invoiceToSettle.invoiceNumber}`,
               },
@@ -138,6 +172,27 @@ export class AccountingService {
     return result;
   }
 
+  static async generateNextInvoiceNumber(): Promise<string> {
+    const year = new Date().getFullYear();
+    const latestInvoice = await prisma.invoice.findFirst({
+      where: { invoiceNumber: { startsWith: `INV-${year}-` } },
+      orderBy: { invoiceNumber: 'desc' },
+    });
+    let nextNum = 1;
+    if (latestInvoice && latestInvoice.invoiceNumber) {
+      const match = latestInvoice.invoiceNumber.match(/INV-\d{4}-(\d+)/);
+      if (match && match[1]) {
+        nextNum = parseInt(match[1], 10) + 1;
+      }
+    }
+    let invoiceNumber = `INV-${year}-${String(nextNum).padStart(4, '0')}`;
+    while (await prisma.invoice.findUnique({ where: { invoiceNumber } })) {
+      nextNum++;
+      invoiceNumber = `INV-${year}-${String(nextNum).padStart(4, '0')}`;
+    }
+    return invoiceNumber;
+  }
+
   static async createInvoice(data: {
     leaseId: string;
     amount?: number;
@@ -155,8 +210,7 @@ export class AccountingService {
     }
     const tenantId = lease.tenantId;
     const amount = Number(data.amount ?? data.amountDue ?? lease.rentAmount);
-    const invoiceCount = await prisma.invoice.count();
-    const invoiceNumber = `INV-${new Date().getFullYear()}-${String(invoiceCount + 1).padStart(4, '0')}`;
+    const invoiceNumber = await AccountingService.generateNextInvoiceNumber();
 
     return prisma.invoice.create({
       data: {
@@ -186,7 +240,7 @@ export class AccountingService {
     });
   }
 
-  static async updateInvoice(id: string, data: { amount?: number; dueDate?: string | Date; status?: any }) {
+  static async updateInvoice(id: string, data: { amount?: number; amountDue?: number; dueDate?: string | Date; status?: any }) {
     const invoice = await prisma.invoice.findUnique({ where: { id } });
     if (!invoice) {
       throw new AppError('Invoice not found', 404);
@@ -194,6 +248,8 @@ export class AccountingService {
     const updateData: any = {};
     if (data.amount !== undefined) {
       updateData.amountDue = Number(data.amount);
+    } else if (data.amountDue !== undefined) {
+      updateData.amountDue = Number(data.amountDue);
     }
     if (data.dueDate) {
       updateData.dueDate = new Date(data.dueDate);
@@ -225,8 +281,7 @@ export class AccountingService {
       throw new AppError('Invoice not found', 404);
     }
 
-    const invoiceCount = await prisma.invoice.count();
-    const invoiceNumber = `INV-${new Date().getFullYear()}-${String(invoiceCount + 1).padStart(4, '0')}`;
+    const invoiceNumber = await AccountingService.generateNextInvoiceNumber();
 
     const nextDueDate = new Date(existing.dueDate);
     nextDueDate.setMonth(nextDueDate.getMonth() + 1);

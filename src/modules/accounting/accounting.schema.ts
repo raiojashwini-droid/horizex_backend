@@ -3,17 +3,10 @@ import { z } from 'zod';
 export const recordPaymentSchema = z.object({
   body: z.object({
     invoiceId: z.string().uuid().optional(),
-    tenantId: z.string().uuid('Valid tenant ID is required'),
-    bankAccountId: z.string().uuid('Valid bank account ID is required'),
+    tenantId: z.string().uuid('Valid tenant ID is required').optional(),
+    bankAccountId: z.string().uuid('Valid bank account ID is required').optional(),
     amount: z.number().positive('Payment amount must be greater than 0'),
-    paymentMethod: z.enum([
-      'INTERAC_E_TRANSFER',
-      'CREDIT_CARD',
-      'PRE_AUTHORIZED_DEBIT',
-      'BANK_TRANSFER',
-      'CHEQUE',
-      'CASH',
-    ]),
+    paymentMethod: z.string().optional().default('INTERAC_E_TRANSFER'),
     referenceId: z.string().optional(),
   }),
 });
