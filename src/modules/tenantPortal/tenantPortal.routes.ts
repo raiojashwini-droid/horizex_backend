@@ -493,57 +493,255 @@ router.delete('/vehicles/:id', async (req: Request, res: Response) => {
 router.get('/documents', async (req: Request, res: Response) => {
   try {
     const tenant = await getTenantFromUser(req.user?.userId);
+    if (!tenant) return res.json([]);
     const activeLease = tenant?.leases?.[0];
 
-    const docs = [
-      {
-        id: 'doc-lease',
-        name: `Lease_Agreement_${activeLease?.unit?.unitNumber || 'Unit'}.pdf`,
-        type: 'Agreement',
-        date: activeLease?.startDate ? new Date(activeLease.startDate).toISOString().split('T')[0] : '2026-01-01',
-        url: '#'
+    // Fetch real documents from database
+    const dbDocs = await prisma.document.findMany({
+      where: {
+        OR: [
+          { userId: tenant.id },
+          { userId: req.user?.userId },
+          ...(activeLease ? [{ leaseId: activeLease.id }, { unitId: activeLease.unitId }] : [])
+        ],
+        isActive: true,
+        type: { not: 'Insurance' } // Insurance is kept in insurance section
       },
-      {
-        id: 'doc-inspect',
-        name: 'Move_In_Inspection.pdf',
-        type: 'Inspection',
-        date: '2026-01-02',
-        url: '#'
-      }
-    ];
+      orderBy: { createdAt: 'desc' }
+    });
 
-    return res.json(docs);
+    const formatted = dbDocs.map(d => ({
+      id: d.id,
+      name: d.name,
+      type: d.type || 'Document',
+      date: d.createdAt.toISOString().split('T')[0],
+      expiryDate: d.expiryDate,
+      fileUrl: d.fileUrl || `/api/tenant/documents/${d.id}/download`,
+      url: d.fileUrl || `/api/tenant/documents/${d.id}/download`
+    }));
+
+    // If no custom documents yet, generate real baseline Lease Agreement document
+    if (formatted.length === 0 && activeLease) {
+      formatted.push({
+        id: `lease-${activeLease.id.slice(0, 8)}`,
+        name: `Lease_Agreement_Unit_${activeLease.unit?.unitNumber || '101'}.pdf`,
+        type: 'Agreement',
+        date: activeLease.startDate ? new Date(activeLease.startDate).toISOString().split('T')[0] : '2026-01-01',
+        expiryDate: activeLease.endDate,
+        fileUrl: `/api/tenant/documents/lease-${activeLease.id}/download`,
+        url: `/api/tenant/documents/lease-${activeLease.id}/download`
+      });
+    }
+
+    return res.json(formatted);
+  } catch (err: any) {
+    return res.status(500).json({ message: err.message });
+  }
+});
+
+router.get('/documents/:id/download', async (req: Request, res: Response) => {
+  try {
+    const tenant = await getTenantFromUser(req.user?.userId);
+    if (!tenant) return res.status(404).json({ message: 'Tenant not found' });
+    const activeLease = tenant?.leases?.[0];
+
+    const docId = req.params.id;
+
+    if (docId.startsWith('lease-')) {
+      // Generate official lease agreement document text
+      const content = `===================================================
+HORIZEX REAL ESTATE - OFFICIAL LEASE AGREEMENT
+===================================================
+Agreement ID:  ${activeLease?.id || 'AGR-DEMO-001'}
+Tenant Name:   ${tenant.firstName} ${tenant.lastName}
+Tenant Email:  ${tenant.email}
+Property:      ${activeLease?.unit?.property?.name || 'Le Mirage Condominiums & Suites'}
+Unit Number:   ${activeLease?.unit?.unitNumber || '101'}
+Lease Term:    ${activeLease?.startDate ? new Date(activeLease.startDate).toLocaleDateString() : '2026-01-01'} to ${activeLease?.endDate ? new Date(activeLease.endDate).toLocaleDateString() : '2027-12-31'}
+Monthly Rent:  $${Number(activeLease?.rentAmount || 1250).toFixed(2)}
+Deposit:       $${Number(activeLease?.depositAmount || 1250).toFixed(2)}
+Status:        ${activeLease?.status || 'ACTIVE'}
+===================================================
+Executed electronically. Verified by Horizex Property Management.
+`;
+      res.setHeader('Content-Type', 'text/plain');
+      res.setHeader('Content-Disposition', `attachment; filename=Lease_Agreement_Unit_${activeLease?.unit?.unitNumber || '101'}.txt`);
+      return res.send(content);
+    }
+
+    const doc = await prisma.document.findFirst({
+      where: {
+        id: docId,
+        isActive: true,
+        OR: [
+          { userId: tenant.id },
+          { userId: req.user?.userId }
+        ]
+      }
+    });
+
+    if (!doc) {
+      return res.status(404).json({ message: 'Document not found' });
+    }
+
+    if (doc.fileUrl && doc.fileUrl.startsWith('data:')) {
+      const matches = doc.fileUrl.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
+      if (matches && matches.length === 3) {
+        const mime = matches[1];
+        const buffer = Buffer.from(matches[2], 'base64');
+        res.setHeader('Content-Type', mime);
+        res.setHeader('Content-Disposition', `attachment; filename=${doc.name || 'document.pdf'}`);
+        return res.send(buffer);
+      }
+    }
+
+    return res.redirect(doc.fileUrl || '#');
   } catch (err: any) {
     return res.status(500).json({ message: err.message });
   }
 });
 
 router.post('/documents', async (req: Request, res: Response) => {
-  return res.json({ success: true, message: 'Document uploaded successfully' });
-});
-
-// 9. Insurance
-router.get('/insurance', async (req: Request, res: Response) => {
   try {
     const tenant = await getTenantFromUser(req.user?.userId);
+    if (!tenant) return res.status(404).json({ message: 'Tenant not found' });
     const activeLease = tenant?.leases?.[0];
 
-    return res.json({
-      provider: 'Desjardins Assurance',
-      policyNumber: 'POL-992834-QC',
-      coverageType: 'Tenant Liability & Contents ($2M)',
-      startDate: activeLease?.startDate ? new Date(activeLease.startDate).toISOString().split('T')[0] : '2026-01-01',
-      endDate: activeLease?.endDate ? new Date(activeLease.endDate).toISOString().split('T')[0] : '2027-12-31',
-      status: 'Active',
-      verified: true
+    const { name, type, fileUrl, fileName, expiryDate } = req.body;
+
+    const doc = await prisma.document.create({
+      data: {
+        name: name || fileName || 'Tenant_Document.pdf',
+        type: type || 'General Document',
+        fileUrl: fileUrl || null,
+        mimeType: fileName?.endsWith('.png') ? 'image/png' : (fileName?.endsWith('.jpg') ? 'image/jpeg' : 'application/pdf'),
+        expiryDate: expiryDate ? new Date(expiryDate) : null,
+        companyId: tenant.companyId,
+        propertyId: activeLease?.unit?.propertyId || null,
+        unitId: activeLease?.unitId || null,
+        userId: tenant.id,
+        leaseId: activeLease?.id || null,
+        isActive: true
+      }
+    });
+
+    return res.status(201).json({
+      success: true,
+      message: 'Document uploaded successfully',
+      data: doc
     });
   } catch (err: any) {
     return res.status(500).json({ message: err.message });
   }
 });
 
+// 9. Insurance
+router.get('/insurance', async (req: Request, res: Response) => {
+  try {
+    const tenant = await getTenantFromUser(req.user?.userId);
+    if (!tenant) {
+      return res.status(404).json({ message: 'Tenant record not found' });
+    }
+    const activeLease = tenant?.leases?.[0];
+
+    // Find real insurance document in database
+    const insuranceDoc = await prisma.document.findFirst({
+      where: {
+        type: 'Insurance',
+        isActive: true,
+        OR: [
+          { userId: tenant.id },
+          { userId: req.user?.userId },
+          ...(activeLease ? [{ leaseId: activeLease.id }, { unitId: activeLease.unitId }] : [])
+        ]
+      },
+      orderBy: { createdAt: 'desc' }
+    });
+
+    if (insuranceDoc) {
+      let meta: any = {};
+      if (insuranceDoc.links && typeof insuranceDoc.links === 'object') {
+        meta = Array.isArray(insuranceDoc.links) ? (insuranceDoc.links[0] || {}) : insuranceDoc.links;
+      }
+
+      const endDate = meta.endDate || (insuranceDoc.expiryDate ? insuranceDoc.expiryDate.toISOString().split('T')[0] : (activeLease?.endDate ? new Date(activeLease.endDate).toISOString().split('T')[0] : null));
+      const isExpired = endDate && new Date(endDate) < new Date();
+
+      return res.json({
+        id: insuranceDoc.id,
+        provider: meta.provider || insuranceDoc.name.replace(/\.pdf$/i, ''),
+        policyNumber: meta.policyNumber || 'POL-ONFILE',
+        coverageType: meta.coverageType || 'Tenant Liability & Contents ($2M)',
+        startDate: meta.startDate || (activeLease?.startDate ? new Date(activeLease.startDate).toISOString().split('T')[0] : insuranceDoc.createdAt.toISOString().split('T')[0]),
+        endDate: endDate,
+        status: isExpired ? 'EXPIRED' : (meta.status || 'Active'),
+        verified: meta.verified ?? true,
+        rejectionReason: meta.rejectionReason || null,
+        documentUrl: insuranceDoc.fileUrl || null,
+        documentName: insuranceDoc.name || 'Insurance_Certificate.pdf'
+      });
+    }
+
+    return res.json(null);
+  } catch (err: any) {
+    return res.status(500).json({ message: err.message });
+  }
+});
+
 router.post('/insurance', async (req: Request, res: Response) => {
-  return res.json({ success: true, message: 'Insurance details updated successfully' });
+  try {
+    const tenant = await getTenantFromUser(req.user?.userId);
+    if (!tenant) {
+      return res.status(404).json({ message: 'Tenant not found' });
+    }
+    const activeLease = tenant?.leases?.[0];
+    const { provider, policyNumber, coverageType, startDate, endDate, fileUrl, fileName } = req.body;
+
+    if (!provider || !policyNumber) {
+      return res.status(400).json({ message: 'Provider and Policy Number are required' });
+    }
+
+    const expiryDate = endDate ? new Date(endDate) : null;
+    const meta = {
+      provider,
+      policyNumber,
+      coverageType: coverageType || 'Tenant Liability & Contents ($2M)',
+      startDate: startDate || new Date().toISOString().split('T')[0],
+      endDate: endDate || null,
+      status: 'PENDING_APPROVAL',
+      verified: false
+    };
+
+    const doc = await prisma.document.create({
+      data: {
+        name: fileName || `${provider}_Insurance_Policy.pdf`,
+        type: 'Insurance',
+        fileUrl: fileUrl || null,
+        mimeType: fileName?.endsWith('.png') ? 'image/png' : fileName?.endsWith('.jpg') ? 'image/jpeg' : 'application/pdf',
+        expiryDate: expiryDate,
+        companyId: tenant.companyId,
+        propertyId: activeLease?.unit?.propertyId || null,
+        unitId: activeLease?.unitId || null,
+        userId: tenant.id,
+        leaseId: activeLease?.id || null,
+        links: meta,
+        isActive: true
+      }
+    });
+
+    return res.json({
+      success: true,
+      message: 'Insurance policy submitted successfully for review',
+      data: {
+        id: doc.id,
+        ...meta,
+        documentUrl: doc.fileUrl,
+        documentName: doc.name
+      }
+    });
+  } catch (err: any) {
+    return res.status(500).json({ message: err.message });
+  }
 });
 
 // 10. Reports (Fully matches TenantReports.jsx expectations)
