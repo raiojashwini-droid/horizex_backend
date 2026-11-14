@@ -2,6 +2,9 @@ import { Router } from 'express';
 import {
   recordPayment,
   createInvoice,
+  updateInvoice,
+  deleteInvoice,
+  duplicateInvoice,
   listInvoices,
   listPaymentsReceived,
   getOutstandingDues,
@@ -49,6 +52,24 @@ router.post(
   '/invoices',
   authorizeRoles('SUPER_ADMIN', 'COMPANY_ADMIN', 'PROPERTY_MANAGER', 'ACCOUNTANT'),
   createInvoice
+);
+
+router.put(
+  '/invoices/:id',
+  authorizeRoles('SUPER_ADMIN', 'COMPANY_ADMIN', 'PROPERTY_MANAGER', 'ACCOUNTANT'),
+  updateInvoice
+);
+
+router.delete(
+  '/invoices/:id',
+  authorizeRoles('SUPER_ADMIN', 'COMPANY_ADMIN', 'PROPERTY_MANAGER', 'ACCOUNTANT'),
+  deleteInvoice
+);
+
+router.post(
+  '/invoices/:id/duplicate',
+  authorizeRoles('SUPER_ADMIN', 'COMPANY_ADMIN', 'PROPERTY_MANAGER', 'ACCOUNTANT'),
+  duplicateInvoice
 );
 
 router.get(

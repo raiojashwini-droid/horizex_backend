@@ -24,6 +24,33 @@ export const createInvoice = async (req: Request, res: Response, next: NextFunct
   }
 };
 
+export const updateInvoice = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const updated = await AccountingService.updateInvoice(req.params.id, req.body);
+    return sendSuccess(res, updated, 200);
+  } catch (err) {
+    return next(err);
+  }
+};
+
+export const deleteInvoice = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const deleted = await AccountingService.deleteInvoice(req.params.id);
+    return sendSuccess(res, deleted, 200);
+  } catch (err) {
+    return next(err);
+  }
+};
+
+export const duplicateInvoice = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const duplicated = await AccountingService.duplicateInvoice(req.params.id);
+    return sendSuccess(res, duplicated, 201);
+  } catch (err) {
+    return next(err);
+  }
+};
+
 export const listInvoices = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const isSuperAdmin = req.user?.role === 'SUPER_ADMIN';

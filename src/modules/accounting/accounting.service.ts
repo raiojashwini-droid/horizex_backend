@@ -186,6 +186,65 @@ export class AccountingService {
     });
   }
 
+  static async updateInvoice(id: string, data: { amount?: number; dueDate?: string | Date; status?: any }) {
+    const invoice = await prisma.invoice.findUnique({ where: { id } });
+    if (!invoice) {
+      throw new AppError('Invoice not found', 404);
+    }
+    const updateData: any = {};
+    if (data.amount !== undefined) {
+      updateData.amountDue = Number(data.amount);
+    }
+    if (data.dueDate) {
+      updateData.dueDate = new Date(data.dueDate);
+    }
+    if (data.status) {
+      updateData.status = data.status;
+    }
+    return prisma.invoice.update({
+      where: { id },
+      data: updateData,
+    });
+  }
+
+  static async deleteInvoice(id: string) {
+    const invoice = await prisma.invoice.findUnique({ where: { id } });
+    if (!invoice) {
+      throw new AppError('Invoice not found', 404);
+    }
+    await prisma.payment.deleteMany({ where: { invoiceId: id } });
+    return prisma.invoice.delete({ where: { id } });
+  }
+
+  static async duplicateInvoice(id: string) {
+    const existing = await prisma.invoice.findUnique({
+      where: { id },
+      include: { tenant: true },
+    });
+    if (!existing) {
+      throw new AppError('Invoice not found', 404);
+    }
+
+    const invoiceCount = await prisma.invoice.count();
+    const invoiceNumber = `INV-${new Date().getFullYear()}-${String(invoiceCount + 1).padStart(4, '0')}`;
+
+    const nextDueDate = new Date(existing.dueDate);
+    nextDueDate.setMonth(nextDueDate.getMonth() + 1);
+
+    return prisma.invoice.create({
+      data: {
+        leaseId: existing.leaseId,
+        tenantId: existing.tenantId,
+        invoiceNumber,
+        amountDue: existing.amountDue,
+        amountPaid: 0,
+        dueDate: nextDueDate,
+        status: 'UNPAID',
+        category: existing.category || 'RENT',
+      },
+    });
+  }
+
   static async listInvoices(filters: {
     companyId?: string | null;
     status?: any;
@@ -202,7 +261,7 @@ export class AccountingService {
       where.tenantId = filters.tenantId;
     }
 
-    return prisma.invoice.findMany({
+    const invoices = await prisma.invoice.findMany({
       where,
       include: {
         tenant: { select: { id: true, firstName: true, lastName: true, email: true } },
@@ -219,6 +278,38 @@ export class AccountingService {
         payments: true,
       },
       orderBy: { dueDate: 'desc' },
+    });
+
+    return invoices.map((inv) => {
+      const tenantName = inv.tenant ? `${inv.tenant.firstName || ''} ${inv.tenant.lastName || ''}`.trim() : 'Unknown';
+      const buildingName = inv.lease?.unit?.property?.name || 'Property';
+      const unitNumber = inv.lease?.unit?.unitNumber || '-';
+      const propertyId = inv.lease?.unit?.property?.id;
+      const amountDue = Number(inv.amountDue);
+      const amountPaid = Number(inv.amountPaid || 0);
+      const outstandingBalance = Math.max(0, amountDue - amountPaid);
+      const dueDateFormatted = inv.dueDate ? new Date(inv.dueDate).toISOString().split('T')[0] : 'N/A';
+
+      return {
+        ...inv,
+        invoiceNo: inv.invoiceNumber,
+        invoiceNumber: inv.invoiceNumber,
+        invoice: inv.invoiceNumber,
+        propertyName: buildingName,
+        buildingName,
+        building: buildingName,
+        propertyId,
+        unitNumber,
+        unit: unitNumber,
+        tenantName,
+        tenant: tenantName,
+        amountDue,
+        amountPaid,
+        outstandingBalance,
+        balance: outstandingBalance,
+        dueDate: dueDateFormatted,
+        status: inv.status,
+      };
     });
   }
 
