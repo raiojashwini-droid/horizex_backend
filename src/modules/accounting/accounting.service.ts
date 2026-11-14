@@ -379,7 +379,23 @@ export class AccountingService {
       include: {
         tenant: { select: { id: true, firstName: true, lastName: true, email: true } },
         bankAccount: { select: { id: true, accountName: true, bankName: true } },
-        invoice: { select: { id: true, invoiceNumber: true } },
+        invoice: {
+          select: {
+            id: true,
+            invoiceNumber: true,
+            category: true,
+            lease: {
+              select: {
+                unit: {
+                  select: {
+                    unitNumber: true,
+                    property: { select: { id: true, name: true } },
+                  },
+                },
+              },
+            },
+          },
+        },
       },
       orderBy: { paidAt: 'desc' },
     });
