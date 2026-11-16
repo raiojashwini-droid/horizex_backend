@@ -132,9 +132,17 @@ export class UnitsService {
       } catch {}
 
       const identifiers: string[] = Array.isArray(meta.bedroomIdentifiers) ? meta.bedroomIdentifiers : [];
+      const activeBedrooms = new Set(
+        (unit.leases || [])
+          .filter((l: any) => l.bedroomId && l.id !== includeId)
+          .map((l: any) => String(l.bedroomId))
+      );
 
       for (let i = 0; i < count; i++) {
         const bedId = i + 1;
+        if (activeBedrooms.has(String(bedId))) {
+          continue; // Skip already occupied bedroom
+        }
         const bedName = identifiers[i] || `${unit.unitNumber}-${i + 1}`;
         allBedrooms.push({
           id: bedId,

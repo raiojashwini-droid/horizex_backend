@@ -1,3 +1,4 @@
+import { Prisma } from '@prisma/client';
 import { prisma } from '../../config/db';
 import { AppError } from '../../middlewares/errorHandler';
 import { createAuditLog } from '../../utils/auditLogger.util';
@@ -359,6 +360,14 @@ export class LeasesService {
       throw new AppError('Unit not found or access denied', 404, 'UNIT_NOT_FOUND');
     }
 
+    const tenant = await prisma.tenant.findUnique({
+      where: { id: data.tenantId },
+    });
+
+    if (!tenant) {
+      throw new AppError('Tenant not found or invalid tenant ID', 404, 'TENANT_NOT_FOUND');
+    }
+
     const rentAmount = Number(data.rentAmount ?? data.monthlyRent) || 0;
     const depositAmount = Number(data.depositAmount ?? data.securityDeposit) || 0;
 
@@ -371,8 +380,19 @@ export class LeasesService {
       );
     }
 
-    const start = new Date(data.startDate);
-    const end = new Date(data.endDate);
+    const parseSafeDate = (val: any) => {
+      if (!val) return new Date(NaN);
+      if (val instanceof Date) return val;
+      const str = String(val).trim();
+      if (/^\d{2}[-/]\d{2}[-/]\d{4}$/.test(str)) {
+        const [d, m, y] = str.split(/[-/]/);
+        return new Date(`${y}-${m}-${d}`);
+      }
+      return new Date(str);
+    };
+
+    const start = parseSafeDate(data.startDate);
+    const end = parseSafeDate(data.endDate);
 
     if (isNaN(start.getTime()) || isNaN(end.getTime())) {
       throw new AppError('Invalid start or end date format', 400, 'INVALID_LEASE_DATES');
@@ -394,18 +414,24 @@ export class LeasesService {
     // 2. Set Unit.status to OCCUPIED if all bedrooms filled
     // 3. Generate initial month Invoice
     const result = await prisma.$transaction(async (tx) => {
+      const leaseData: any = {
+        unitId: data.unitId,
+        tenantId: data.tenantId,
+        startDate: start,
+        endDate: end,
+        rentAmount: rentAmount,
+        depositAmount: depositAmount,
+        status: 'ACTIVE',
+      };
+      if ('bedroomId' in Prisma.LeaseScalarFieldEnum && bedroomId) {
+        leaseData.bedroomId = bedroomId;
+      }
+      if ('leaseType' in Prisma.LeaseScalarFieldEnum && leaseType) {
+        leaseData.leaseType = leaseType;
+      }
+
       const lease = await tx.lease.create({
-        data: {
-          unitId: data.unitId,
-          tenantId: data.tenantId,
-          startDate: start,
-          endDate: end,
-          rentAmount: rentAmount,
-          depositAmount: depositAmount,
-          bedroomId: bedroomId,
-          leaseType: leaseType,
-          status: 'ACTIVE',
-        } as any,
+        data: leaseData,
       });
 
       const newActiveCount = unit.leases.length + 1;
@@ -417,7 +443,7 @@ export class LeasesService {
       }
 
       // Generate invoice number e.g. INV-202610-UUID
-      const invoiceNumber = `INV-${Date.now().toString().slice(-6)}-${unit.unitNumber}`;
+      const invoiceNumber = `INV-${Date.now()}-${Math.floor(1000 + Math.random() * 9000)}-${unit.unitNumber || 'UNIT'}`;
 
       await tx.invoice.create({
         data: {
@@ -431,7 +457,11 @@ export class LeasesService {
         },
       });
 
-      return lease;
+      return {
+        ...lease,
+        bedroomId: bedroomId || null,
+        leaseType: leaseType || 'Full Unit Lease',
+      };
     });
 
     await createAuditLog({
@@ -442,7 +472,27 @@ export class LeasesService {
       newData: result,
     });
 
-    return result;
+    let notifications: any = undefined;
+    if (data.sendCredentials && tenant) {
+      notifications = {
+        status: 'Sent',
+        email: Boolean(tenant.email),
+        sms: Boolean(tenant.phone),
+        message: 'Credentials sent successfully',
+      };
+      await createAuditLog({
+        userId: actorUserId,
+        action: 'SEND_LEASE_CREDENTIALS',
+        entityType: 'Lease',
+        entityId: result.id,
+        newData: { tenantId: tenant.id, email: tenant.email, phone: tenant.phone },
+      });
+    }
+
+    return {
+      ...result,
+      notifications,
+    };
   }
 
   static async updateLease(
