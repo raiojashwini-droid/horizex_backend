@@ -76,6 +76,8 @@ router.get('/dashboard/stats', async (req: Request, res: Response) => {
         },
         outstandingDues: 0,
         insuranceExpiryCount: 0,
+        leasesExpiring: 0,
+        openTickets: 0,
         recentActivity: [],
         tenants: [],
       });
@@ -149,6 +151,24 @@ router.get('/dashboard/stats', async (req: Request, res: Response) => {
       },
     });
 
+    const in30Days = new Date();
+    in30Days.setDate(in30Days.getDate() + 30);
+    const leasesExpiring = await prisma.lease.count({
+      where: {
+        unit: { propertyId: { in: propertyIds } },
+        status: 'ACTIVE',
+        isActive: true,
+        endDate: { lte: in30Days, gte: new Date() },
+      },
+    });
+
+    const openTickets = await prisma.maintenanceTicket.count({
+      where: {
+        propertyId: { in: propertyIds },
+        status: { in: ['SUBMITTED', 'IN_PROGRESS', 'PENDING_PARTS'] },
+      },
+    });
+
     return res.json({
       propertyCount: totalProperties,
       totalProperties,
@@ -157,6 +177,8 @@ router.get('/dashboard/stats', async (req: Request, res: Response) => {
       occupiedUnits,
       monthlyRevenue,
       occupancyRate,
+      leasesExpiring,
+      openTickets,
       occupancy: {
         vacantUnits,
         vacantUnitsList: vacantUnitsList.map((u) => `${u.property?.name} Unit ${u.unitNumber}`),
