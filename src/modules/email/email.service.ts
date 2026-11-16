@@ -14,6 +14,7 @@ export interface EmailTemplateItem {
   documents?: any[];
   companyId?: string | null;
   createdAt: string;
+  updatedAt?: string;
 }
 
 export class EmailService {
@@ -67,6 +68,7 @@ export class EmailService {
           documents: attachedDocs,
           companyId: t.companyId,
           createdAt: t.createdAt ? new Date(t.createdAt).toISOString() : new Date().toISOString(),
+          updatedAt: t.updatedAt ? new Date(t.updatedAt).toISOString() : (t.createdAt ? new Date(t.createdAt).toISOString() : new Date().toISOString()),
         };
       });
     } catch (err) {
@@ -97,7 +99,7 @@ export class EmailService {
       const result: any[] = await prisma.$queryRawUnsafe(`
         INSERT INTO "EmailTemplate" ("id", "name", "subject", "body", "type", "language", "documentIds", "companyId", "createdAt", "updatedAt", "isActive")
         VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, NOW(), NOW(), TRUE)
-        RETURNING id, name, subject, body, type, language, "documentIds", "companyId", "createdAt"
+        RETURNING id, name, subject, body, type, language, "documentIds", "companyId", "createdAt", "updatedAt"
       `, id, data.name, data.subject, data.body, type, language, docIds, data.companyId || null);
 
       const created = result[0];
@@ -112,6 +114,7 @@ export class EmailService {
         documents: [],
         companyId: created.companyId,
         createdAt: new Date(created.createdAt).toISOString(),
+        updatedAt: created.updatedAt ? new Date(created.updatedAt).toISOString() : new Date().toISOString(),
       };
     } catch (err) {
       console.error('Error creating email template:', err);
@@ -140,7 +143,7 @@ export class EmailService {
             "documentIds" = CASE WHEN $6::jsonb IS NOT NULL THEN $6::jsonb ELSE "documentIds" END,
             "updatedAt" = NOW()
         WHERE "id" = $7 AND "isActive" = TRUE
-        RETURNING id, name, subject, body, type, language, "documentIds", "companyId", "createdAt"
+        RETURNING id, name, subject, body, type, language, "documentIds", "companyId", "createdAt", "updatedAt"
       `,
         data.name || null,
         data.subject || null,
@@ -167,6 +170,7 @@ export class EmailService {
         documents: [],
         companyId: updated.companyId,
         createdAt: new Date(updated.createdAt).toISOString(),
+        updatedAt: updated.updatedAt ? new Date(updated.updatedAt).toISOString() : new Date().toISOString(),
       };
     } catch (err: any) {
       if (err instanceof AppError) throw err;
@@ -271,9 +275,28 @@ export class EmailService {
         .replace(/\{\{first_name\}\}/gi, name.split(' ')[0] || 'Resident')
         .replace(/\{\{recipient_name\}\}/gi, name);
 
-      const personalizedBody = body
+      const rawPersonalizedBody = body
         .replace(/\{\{first_name\}\}/gi, name.split(' ')[0] || 'Resident')
         .replace(/\{\{recipient_name\}\}/gi, name);
+
+      let personalizedBody = rawPersonalizedBody;
+      if (!personalizedBody.includes('<!DOCTYPE') && !personalizedBody.includes('<html') && !personalizedBody.includes('email-wrapper')) {
+        personalizedBody = `
+          <div class="email-wrapper" style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color: #f8fafc; padding: 24px 12px;">
+            <div style="max-width: 600px; margin: 0 auto; background: #ffffff; border-radius: 12px; overflow: hidden; border: 1px solid #e2e8f0; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);">
+              <div style="background-color: #0f172a; padding: 18px 24px;">
+                <h2 style="color: #ffffff; margin: 0; font-size: 16px; font-weight: 800; letter-spacing: 0.05em;">HORIZEX REAL ESTATE</h2>
+              </div>
+              <div style="padding: 24px; color: #334155; font-size: 14px; line-height: 1.6;">
+                ${rawPersonalizedBody}
+              </div>
+              <div style="background-color: #f8fafc; padding: 14px 24px; border-top: 1px solid #f1f5f9; font-size: 11px; color: #94a3b8; text-align: center;">
+                This is an official communication from Horizex Property Management.
+              </div>
+            </div>
+          </div>
+        `.trim();
+      }
 
       const logId = `elog-${crypto.randomUUID().slice(0, 8)}`;
 
