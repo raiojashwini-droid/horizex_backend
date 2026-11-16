@@ -29,6 +29,12 @@ import {
   getReadinessBuildings,
   getReadinessStats,
   updateUnitReadiness,
+  getReadinessSettings,
+  updateReadinessSettings,
+  getReadinessHolidays,
+  addReadinessHoliday,
+  deleteReadinessHoliday,
+  activateUnitReadiness,
 } from './modules/units/units.controller';
 import { authenticate } from './middlewares/auth.middleware';
 import { authorizeRoles } from './middlewares/rbac.middleware';
@@ -86,6 +92,42 @@ router.put(
   authenticate,
   authorizeRoles('SUPER_ADMIN', 'COMPANY_ADMIN', 'PROPERTY_MANAGER', 'MAINTENANCE_STAFF', 'ADMIN'),
   updateUnitReadiness
+);
+router.get(
+  '/admin/readiness/settings',
+  authenticate,
+  authorizeRoles('SUPER_ADMIN', 'COMPANY_ADMIN', 'PROPERTY_MANAGER', 'MAINTENANCE_STAFF', 'ADMIN'),
+  getReadinessSettings
+);
+router.put(
+  '/admin/readiness/settings',
+  authenticate,
+  authorizeRoles('SUPER_ADMIN', 'COMPANY_ADMIN', 'PROPERTY_MANAGER', 'MAINTENANCE_STAFF', 'ADMIN'),
+  updateReadinessSettings
+);
+router.get(
+  '/admin/readiness/holidays',
+  authenticate,
+  authorizeRoles('SUPER_ADMIN', 'COMPANY_ADMIN', 'PROPERTY_MANAGER', 'MAINTENANCE_STAFF', 'ADMIN'),
+  getReadinessHolidays
+);
+router.post(
+  '/admin/readiness/holidays',
+  authenticate,
+  authorizeRoles('SUPER_ADMIN', 'COMPANY_ADMIN', 'PROPERTY_MANAGER', 'MAINTENANCE_STAFF', 'ADMIN'),
+  addReadinessHoliday
+);
+router.delete(
+  '/admin/readiness/holidays/:id',
+  authenticate,
+  authorizeRoles('SUPER_ADMIN', 'COMPANY_ADMIN', 'PROPERTY_MANAGER', 'MAINTENANCE_STAFF', 'ADMIN'),
+  deleteReadinessHoliday
+);
+router.put(
+  '/admin/readiness/activate/:id',
+  authenticate,
+  authorizeRoles('SUPER_ADMIN', 'COMPANY_ADMIN', 'PROPERTY_MANAGER', 'MAINTENANCE_STAFF', 'ADMIN'),
+  activateUnitReadiness
 );
 
 // Reports - Rent Roll Engine

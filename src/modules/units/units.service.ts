@@ -1,6 +1,95 @@
+import fs from 'fs';
+import path from 'path';
 import { prisma } from '../../config/db';
 import { AppError } from '../../middlewares/errorHandler';
 import { createAuditLog } from '../../utils/auditLogger.util';
+
+const DATA_DIR = path.join(__dirname, '../../../data');
+const SETTINGS_FILE = path.join(DATA_DIR, 'readiness_settings.json');
+const HOLIDAYS_FILE = path.join(DATA_DIR, 'readiness_holidays.json');
+
+export const DEFAULT_TIMELINE_SETTINGS = [
+  { id: 1, key: 'gc_to_deficiencies', days: 2 },
+  { id: 2, key: 'deficiencies_to_cleaned', days: 2 },
+  { id: 3, key: 'cleaned_to_ffe', days: 4 },
+  { id: 4, key: 'ffe_to_final', days: 3 },
+  { id: 5, key: 'final_to_ose', days: 1 },
+  { id: 6, key: 'ose_to_ready', days: 2 }
+];
+
+function getReadinessSettingsData(): any[] {
+  try {
+    if (fs.existsSync(SETTINGS_FILE)) {
+      const content = fs.readFileSync(SETTINGS_FILE, 'utf-8');
+      const parsed = JSON.parse(content);
+      if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+    }
+  } catch {}
+  return DEFAULT_TIMELINE_SETTINGS;
+}
+
+function saveReadinessSettingsData(settings: any[]) {
+  try {
+    if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+    fs.writeFileSync(SETTINGS_FILE, JSON.stringify(settings, null, 2), 'utf-8');
+  } catch (err) {
+    console.error('Error saving readiness settings:', err);
+  }
+}
+
+function getReadinessHolidaysData(): any[] {
+  try {
+    if (fs.existsSync(HOLIDAYS_FILE)) {
+      const content = fs.readFileSync(HOLIDAYS_FILE, 'utf-8');
+      const parsed = JSON.parse(content);
+      if (Array.isArray(parsed)) return parsed;
+    }
+  } catch {}
+  return [];
+}
+
+function saveReadinessHolidaysData(holidays: any[]) {
+  try {
+    if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+    fs.writeFileSync(HOLIDAYS_FILE, JSON.stringify(holidays, null, 2), 'utf-8');
+  } catch (err) {
+    console.error('Error saving readiness holidays:', err);
+  }
+}
+
+export function calculateTimelineDates(baseDateStr: string, settings: any[] = DEFAULT_TIMELINE_SETTINGS) {
+  const baseDate = new Date(String(baseDateStr).substring(0, 10) + 'T12:00:00');
+  if (isNaN(baseDate.getTime())) return {};
+
+  const getDays = (k: string, def: number) => {
+    const s = settings.find((item: any) => item.key === k);
+    return s && !isNaN(Number(s.days)) ? Number(s.days) : def;
+  };
+
+  const dates: Record<string, string> = {};
+  dates.gc_delivered = baseDate.toISOString().split('T')[0];
+
+  let curr = new Date(baseDate);
+  curr = new Date(curr.getTime() + getDays('gc_to_deficiencies', 2) * 86400000);
+  dates.gc_deficiencies = curr.toISOString().split('T')[0];
+
+  curr = new Date(curr.getTime() + getDays('deficiencies_to_cleaned', 2) * 86400000);
+  dates.gc_cleaned = curr.toISOString().split('T')[0];
+
+  curr = new Date(curr.getTime() + getDays('cleaned_to_ffe', 4) * 86400000);
+  dates.ffe_installed = curr.toISOString().split('T')[0];
+
+  curr = new Date(curr.getTime() + getDays('ffe_to_final', 3) * 86400000);
+  dates.final_cleaning = curr.toISOString().split('T')[0];
+
+  curr = new Date(curr.getTime() + getDays('final_to_ose', 1) * 86400000);
+  dates.ose_installed = curr.toISOString().split('T')[0];
+
+  curr = new Date(curr.getTime() + getDays('ose_to_ready', 2) * 86400000);
+  dates.unit_ready = curr.toISOString().split('T')[0];
+
+  return dates;
+}
 
 export class UnitsService {
   static async listUnits(filters: {
@@ -132,6 +221,15 @@ export class UnitsService {
       } catch {}
 
       const identifiers: string[] = Array.isArray(meta.bedroomIdentifiers) ? meta.bedroomIdentifiers : [];
+
+      // If unit already has an active full-unit lease, all bedrooms are occupied
+      const hasFullUnitLease = (unit.leases || []).some(
+        (l: any) => !l.bedroomId && (l.status === 'ACTIVE' || l.status === 'Active') && l.id !== includeId
+      );
+      if (hasFullUnitLease) {
+        continue;
+      }
+
       const activeBedrooms = new Set(
         (unit.leases || [])
           .filter((l: any) => l.bedroomId && l.id !== includeId)
@@ -218,8 +316,19 @@ export class UnitsService {
       });
     }
 
+    const stepKeys = ['gc_delivered', 'gc_deficiencies', 'gc_cleaned', 'ffe_installed', 'final_cleaning', 'ose_installed', 'unit_ready'];
+    const stepFields: Record<string, any> = {};
+    stepKeys.forEach(k => {
+      stepFields[`${k}_completed`] = Boolean(meta.completion?.[k] || meta[`${k}_completed`]);
+      stepFields[`${k}_target_date`] = meta.targetDates?.[k] || meta[`${k}_target_date`] || (k === 'gc_delivered' ? meta.gc_delivered_target_date : null) || null;
+      stepFields[`${k}_completed_date`] = meta.completionDates?.[k] || meta[`${k}_completed_date`] || null;
+    });
+
     return {
       ...unit,
+      ...stepFields,
+      completion: meta.completion || {},
+      targetDates: meta.targetDates || {},
       classification,
       unit_status,
       reserved_flag: unit.reservedFlag || meta.reserved_flag || false,
@@ -649,28 +758,152 @@ export class UnitsService {
     return { message: 'Unit deleted successfully' };
   }
 
-  static async getReadinessDashboard(companyId?: string | null) {
-    const where: any = {
-      isActive: true,
-      status: 'TURNOVER',
-    };
-    if (companyId) {
+  static async getReadinessDashboard(companyId?: string | null, query?: any) {
+    const search = typeof query?.search === 'string' ? query.search.trim() : '';
+    const statusFilter = typeof query?.status === 'string' ? query.status.trim() : '';
+    const propertyId = typeof query?.propertyId === 'string' && query.propertyId !== 'all' && query.propertyId !== 'undefined' && query.propertyId !== 'null' ? query.propertyId.trim() : '';
+    const showLeased = String(query?.showLeased) === 'true';
+    const page = Math.max(1, parseInt(String(query?.page)) || 1);
+    const limit = Math.max(1, parseInt(String(query?.limit)) || 15);
+
+    const where: any = {};
+    if (companyId && companyId !== 'all') {
       where.property = { companyId };
     }
+    if (propertyId) {
+      where.propertyId = propertyId;
+    }
 
-    const unitsInTurnover = await prisma.unit.findMany({
+    // Unless showLeased is true, only show vacant/turnover units or units without active lease
+    if (!showLeased) {
+      where.OR = [
+        { status: { in: ['VACANT', 'TURNOVER'] } },
+        { leases: { none: { status: 'ACTIVE', isActive: true } } },
+      ];
+    }
+
+    if (search) {
+      const searchCondition = {
+        OR: [
+          { unitNumber: { contains: search, mode: 'insensitive' as const } },
+          { property: { name: { contains: search, mode: 'insensitive' as const } } },
+        ],
+      };
+      where.AND = where.AND ? [...where.AND, searchCondition] : [searchCondition];
+    }
+
+    const units = await prisma.unit.findMany({
       where,
       include: {
-        property: { select: { id: true, name: true } },
+        property: { select: { id: true, name: true, companyId: true } },
+        unitType: { select: { id: true, name: true, code: true } },
         readiness: true,
+        leases: {
+          where: { status: 'ACTIVE', isActive: true },
+          include: { tenant: { select: { id: true, firstName: true, lastName: true, phone: true } } },
+        },
         tickets: {
           where: { status: { notIn: ['CLOSED', 'RESOLVED'] } },
         },
       },
-      orderBy: { updatedAt: 'desc' },
+      orderBy: [{ property: { name: 'asc' } }, { unitNumber: 'asc' }],
     });
 
-    // Group units into Kanban stages
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    const stepKeys = ['gc_delivered', 'gc_deficiencies', 'gc_cleaned', 'ffe_installed', 'final_cleaning', 'ose_installed', 'unit_ready'];
+
+    let mappedUnits = units.map((u) => {
+      let meta: any = {};
+      try {
+        meta = JSON.parse(u.readiness?.notes || '{}');
+      } catch {}
+
+      const completion: Record<string, boolean> = {
+        gc_delivered: Boolean(meta.completion?.gc_delivered || meta.gc_delivered_completed),
+        gc_deficiencies: Boolean(meta.completion?.gc_deficiencies || meta.gc_deficiencies_completed),
+        gc_cleaned: Boolean(meta.completion?.gc_cleaned || meta.gc_cleaned_completed),
+        ffe_installed: Boolean(meta.completion?.ffe_installed || meta.ffe_installed_completed),
+        final_cleaning: Boolean(meta.completion?.final_cleaning || meta.final_cleaning_completed),
+        ose_installed: Boolean(meta.completion?.ose_installed || meta.ose_installed_completed),
+        unit_ready: Boolean(meta.completion?.unit_ready || meta.unit_ready_completed || u.readiness?.stage === 'READY_TO_LEASE'),
+      };
+
+      const targetDates: Record<string, string | null> = {
+        gc_delivered: meta.targetDates?.gc_delivered || meta.gc_delivered_target_date || null,
+        gc_deficiencies: meta.targetDates?.gc_deficiencies || null,
+        gc_cleaned: meta.targetDates?.gc_cleaned || null,
+        ffe_installed: meta.targetDates?.ffe_installed || null,
+        final_cleaning: meta.targetDates?.final_cleaning || null,
+        ose_installed: meta.targetDates?.ose_installed || null,
+        unit_ready: meta.targetDates?.unit_ready || null,
+      };
+
+      let daysLate = 0;
+      for (const k of stepKeys) {
+        if (!completion[k] && targetDates[k]) {
+          const tDate = new Date(String(targetDates[k]).substring(0, 10) + 'T12:00:00');
+          if (tDate < today) {
+            const diffDays = Math.ceil((today.getTime() - tDate.getTime()) / (1000 * 60 * 60 * 24));
+            if (diffDays > daysLate) daysLate = diffDays;
+          }
+        }
+      }
+
+      const vacantSince = u.updatedAt ? new Date(u.updatedAt) : new Date(u.createdAt);
+      const marketAge = Math.max(0, Math.floor((today.getTime() - vacantSince.getTime()) / (1000 * 60 * 60 * 24)));
+
+      const reserved = Boolean(u.reservedFlag || meta.reserved_flag);
+      const reservedBy = [u.reserveFirstName, u.reserveLastName].filter(Boolean).join(' ').trim() || meta.reserve_name || (reserved ? 'Reserved' : '');
+      const moveInDate = u.tentativeMoveInDate
+        ? u.tentativeMoveInDate.toISOString().split('T')[0]
+        : (meta.tentative_move_in_date || (u.leases?.[0]?.startDate ? u.leases[0].startDate.toISOString().split('T')[0] : null));
+
+      const hasActiveLease = u.leases && u.leases.length > 0;
+
+      return {
+        id: u.id,
+        building: u.property?.name || 'Unknown',
+        buildingId: u.propertyId,
+        unitNumber: u.unitNumber,
+        unitType: u.unitType?.name || 'Standard',
+        status: u.status,
+        isActive: u.isActive,
+        isPriority: Boolean(meta.isPriority || meta.priority),
+        reserved,
+        reservedBy,
+        stage: u.readiness?.stage || meta.stage || 'NOTICE_GIVEN',
+        completion,
+        targetDates,
+        daysLate,
+        moveInDate,
+        marketAge,
+        marketAgeLabel: 'days',
+        hasActiveLease,
+        openTickets: u.tickets?.length || 0,
+      };
+    });
+
+    if (statusFilter) {
+      if (statusFilter === 'Occupied') {
+        mappedUnits = mappedUnits.filter((u) => u.hasActiveLease || u.status === 'OCCUPIED');
+      } else if (statusFilter === 'Available') {
+        mappedUnits = mappedUnits.filter((u) => !u.hasActiveLease && !u.reserved && u.status !== 'OCCUPIED');
+      } else if (statusFilter === 'Reserved') {
+        mappedUnits = mappedUnits.filter((u) => u.reserved);
+      } else if (statusFilter === 'INACTIVE') {
+        mappedUnits = mappedUnits.filter((u) => !u.isActive);
+      } else if (statusFilter === 'ACTIVE') {
+        mappedUnits = mappedUnits.filter((u) => u.isActive);
+      }
+    }
+
+    const total = mappedUnits.length;
+    const startIndex = (page - 1) * limit;
+    const paginatedUnits = mappedUnits.slice(startIndex, startIndex + limit);
+
+    // Keep backwards compatibility for Kanban stages
     const stages: Record<string, any[]> = {
       NOTICE_GIVEN: [],
       MOVE_OUT_INSPECTION: [],
@@ -681,16 +914,18 @@ export class UnitsService {
       FINAL_INSPECTION: [],
       READY_TO_LEASE: [],
     };
-
-    for (const unit of unitsInTurnover) {
-      const stage = unit.readiness?.stage || 'NOTICE_GIVEN';
-      if (stages[stage]) {
-        stages[stage].push(unit);
+    for (const u of mappedUnits) {
+      if (stages[u.stage]) {
+        stages[u.stage].push(u);
       }
     }
 
     return {
-      totalInTurnover: unitsInTurnover.length,
+      units: paginatedUnits,
+      total,
+      page,
+      limit,
+      totalInTurnover: total,
       stages,
     };
   }
@@ -698,22 +933,72 @@ export class UnitsService {
   static async updateUnitReadiness(
     unitId: string,
     companyId: string | null | undefined,
-    data: {
-      stage?: any;
-      assignedWorker?: string;
-      turnoverDeadline?: string;
-      cleaningComplete?: boolean;
-      paintComplete?: boolean;
-      repairComplete?: boolean;
-      notes?: string;
-    },
+    data: any,
     actorUserId?: string
   ) {
     const unit = await this.getUnitById(unitId, companyId);
+    let meta: any = {};
+    try {
+      meta = JSON.parse(unit.readiness?.notes || '{}');
+    } catch {}
 
-    // GATEKEEPER BUSINESS RULE:
-    // If attempting to mark READY_TO_LEASE, verify no open repair tickets exist
-    if (data.stage === 'READY_TO_LEASE') {
+    meta.completion = meta.completion || {};
+    meta.targetDates = meta.targetDates || {};
+    meta.completionDates = meta.completionDates || {};
+    meta.manualDates = meta.manualDates || {};
+
+    let targetStage = data.stage || unit.readiness?.stage || 'NOTICE_GIVEN';
+
+    if (data.stepKey) {
+      const stepKey = data.stepKey;
+      if (data.targetDate !== undefined) {
+        meta.targetDates[stepKey] = data.targetDate;
+        meta[`${stepKey}_target_date`] = data.targetDate;
+        if (data.isManual) {
+          meta.manualDates[stepKey] = true;
+        }
+        if (stepKey === 'gc_delivered') {
+          meta.gc_delivered_target_date = data.targetDate;
+        }
+      }
+
+      if (data.completed !== undefined) {
+        const isDone = Boolean(data.completed);
+        meta.completion[stepKey] = isDone;
+        meta[`${stepKey}_completed`] = isDone;
+        const nowIso = isDone ? new Date().toISOString() : null;
+        meta.completionDates[stepKey] = nowIso;
+        meta[`${stepKey}_completed_date`] = nowIso;
+
+        if (stepKey === 'unit_ready' && isDone) {
+          targetStage = 'READY_TO_LEASE';
+        } else if (stepKey === 'gc_delivered' && isDone && targetStage === 'NOTICE_GIVEN') {
+          targetStage = 'MAINTENANCE_REPAIRS';
+        }
+      }
+
+      if (data.recalculate) {
+        const baseDate = meta.targetDates.gc_delivered || meta.gc_delivered_target_date || new Date().toISOString().split('T')[0];
+        const projected = calculateTimelineDates(baseDate, getReadinessSettingsData());
+        const otherSteps = ['gc_deficiencies', 'gc_cleaned', 'ffe_installed', 'final_cleaning', 'ose_installed', 'unit_ready'];
+        for (const k of otherSteps) {
+          if (data.force || !meta.manualDates[k]) {
+            meta.targetDates[k] = projected[k];
+            meta[`${k}_target_date`] = projected[k];
+          }
+        }
+      }
+    }
+
+    if (data.notes && typeof data.notes === 'string' && data.notes.startsWith('{')) {
+      try {
+        const incomingNotes = JSON.parse(data.notes);
+        meta = { ...meta, ...incomingNotes };
+      } catch {}
+    }
+
+    // Gatekeeper rule:
+    if (targetStage === 'READY_TO_LEASE') {
       const openTicketsCount = await prisma.maintenanceTicket.count({
         where: {
           unitId: unit.id,
@@ -733,28 +1018,27 @@ export class UnitsService {
     const updatedReadiness = await prisma.unitReadiness.upsert({
       where: { unitId: unit.id },
       update: {
-        stage: data.stage,
-        assignedWorker: data.assignedWorker,
+        stage: targetStage,
+        assignedWorker: data.assignedWorker !== undefined ? data.assignedWorker : undefined,
         turnoverDeadline: data.turnoverDeadline ? new Date(data.turnoverDeadline) : undefined,
-        cleaningComplete: data.cleaningComplete,
-        paintComplete: data.paintComplete,
-        repairComplete: data.repairComplete,
-        notes: data.notes,
+        cleaningComplete: data.cleaningComplete !== undefined ? data.cleaningComplete : undefined,
+        paintComplete: data.paintComplete !== undefined ? data.paintComplete : undefined,
+        repairComplete: data.repairComplete !== undefined ? data.repairComplete : undefined,
+        notes: JSON.stringify(meta),
       },
       create: {
         unitId: unit.id,
-        stage: data.stage ?? 'NOTICE_GIVEN',
+        stage: targetStage,
         assignedWorker: data.assignedWorker,
         turnoverDeadline: data.turnoverDeadline ? new Date(data.turnoverDeadline) : undefined,
         cleaningComplete: data.cleaningComplete ?? false,
         paintComplete: data.paintComplete ?? false,
         repairComplete: data.repairComplete ?? false,
-        notes: data.notes,
+        notes: JSON.stringify(meta),
       },
     });
 
-    // When marked READY_TO_LEASE, unit automatically transitions back to VACANT
-    if (data.stage === 'READY_TO_LEASE') {
+    if (targetStage === 'READY_TO_LEASE') {
       await prisma.unit.update({
         where: { id: unit.id },
         data: { status: 'VACANT' },
@@ -770,12 +1054,17 @@ export class UnitsService {
       newData: updatedReadiness,
     });
 
-    return updatedReadiness;
+    return {
+      ...updatedReadiness,
+      completion: meta.completion,
+      targetDates: meta.targetDates,
+      meta,
+    };
   }
 
   static async getReadinessBuildings(companyId?: string | null) {
     const where: any = { isActive: true };
-    if (companyId) where.companyId = companyId;
+    if (companyId && companyId !== 'all') where.companyId = companyId;
     return prisma.property.findMany({
       where,
       select: { id: true, name: true, address: true, totalUnits: true },
@@ -783,23 +1072,157 @@ export class UnitsService {
     });
   }
 
-  static async getReadinessStats(companyId?: string | null) {
-    const where: any = { isActive: true };
-    if (companyId) where.property = { companyId };
+  static async getReadinessStats(companyId?: string | null, query?: any) {
+    const propertyId = typeof query?.propertyId === 'string' && query.propertyId !== 'all' && query.propertyId !== 'undefined' && query.propertyId !== 'null' ? query.propertyId.trim() : '';
+    const showLeased = String(query?.showLeased) === 'true';
 
-    const [totalTurnover, readyToLease, inProgress] = await Promise.all([
-      prisma.unit.count({ where: { ...where, status: 'TURNOVER' } }),
-      prisma.unit.count({ where: { ...where, readiness: { stage: 'READY_TO_LEASE' } } }),
-      prisma.unit.count({
-        where: { ...where, status: 'TURNOVER', readiness: { stage: { not: 'READY_TO_LEASE' } } },
-      }),
-    ]);
+    const where: any = {};
+    if (companyId && companyId !== 'all') where.property = { companyId };
+    if (propertyId) where.propertyId = propertyId;
+    if (!showLeased) {
+      where.OR = [
+        { status: { in: ['VACANT', 'TURNOVER'] } },
+        { leases: { none: { status: 'ACTIVE', isActive: true } } },
+      ];
+    }
+
+    const units = await prisma.unit.findMany({
+      where,
+      include: {
+        property: true,
+        readiness: true,
+        leases: { where: { status: 'ACTIVE', isActive: true } },
+      },
+    });
+
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    let readyForLeasing = 0;
+    let reservedUnits = 0;
+    let overdueUnits = 0;
+
+    const stepKeys = ['gc_delivered', 'gc_deficiencies', 'gc_cleaned', 'ffe_installed', 'final_cleaning', 'ose_installed', 'unit_ready'];
+
+    for (const u of units) {
+      let meta: any = {};
+      try { meta = JSON.parse(u.readiness?.notes || '{}'); } catch {}
+
+      const isReserved = Boolean(u.reservedFlag || meta.reserved_flag);
+      if (isReserved) reservedUnits++;
+
+      const isReady = Boolean(
+        meta.completion?.unit_ready ||
+        meta.unit_ready_completed ||
+        u.readiness?.stage === 'READY_TO_LEASE'
+      );
+      if (isReady) readyForLeasing++;
+
+      let isOverdue = false;
+      for (const k of stepKeys) {
+        const isDone = Boolean(meta.completion?.[k] || meta[`${k}_completed`]);
+        const tDateStr = meta.targetDates?.[k] || meta[`${k}_target_date`] || (k === 'gc_delivered' ? meta.gc_delivered_target_date : null);
+        if (!isDone && tDateStr) {
+          const tDate = new Date(String(tDateStr).substring(0, 10) + 'T12:00:00');
+          if (tDate < today) {
+            isOverdue = true;
+            break;
+          }
+        }
+      }
+      if (isOverdue) overdueUnits++;
+    }
 
     return {
-      totalTurnover,
-      readyToLease,
-      inProgress,
+      totalUnits: units.length,
+      readyForLeasing,
+      reservedUnits,
+      overdueUnits,
+      totalTurnover: units.length,
+      readyToLease: readyForLeasing,
+      inProgress: units.length - readyForLeasing,
     };
+  }
+
+  static async getReadinessSettings() {
+    return getReadinessSettingsData();
+  }
+
+  static async updateReadinessSettings(settings: any[], triggerRecalculate = false, companyId?: string | null) {
+    if (Array.isArray(settings)) {
+      saveReadinessSettingsData(settings);
+    }
+    if (triggerRecalculate) {
+      const units = await prisma.unit.findMany({
+        where: { isActive: true, ...(companyId && companyId !== 'all' ? { property: { companyId } } : {}) },
+        include: { readiness: true },
+      });
+      for (const u of units) {
+        let meta: any = {};
+        try { meta = JSON.parse(u.readiness?.notes || '{}'); } catch {}
+        const base = meta.targetDates?.gc_delivered || meta.gc_delivered_target_date;
+        if (base) {
+          const proj = calculateTimelineDates(base, settings);
+          meta.targetDates = meta.targetDates || {};
+          meta.manualDates = meta.manualDates || {};
+          for (const k of ['gc_deficiencies', 'gc_cleaned', 'ffe_installed', 'final_cleaning', 'ose_installed', 'unit_ready']) {
+            if (!meta.manualDates[k]) {
+              meta.targetDates[k] = proj[k];
+              meta[`${k}_target_date`] = proj[k];
+            }
+          }
+          await prisma.unitReadiness.upsert({
+            where: { unitId: u.id },
+            update: { notes: JSON.stringify(meta) },
+            create: { unitId: u.id, notes: JSON.stringify(meta) },
+          });
+        }
+      }
+    }
+    return getReadinessSettingsData();
+  }
+
+  static async getReadinessHolidays() {
+    return getReadinessHolidaysData();
+  }
+
+  static async addReadinessHoliday(holiday: { name: string; date: string }) {
+    const holidays = getReadinessHolidaysData();
+    const newHoliday = {
+      id: Buffer.from(Date.now().toString()).toString('base64').substring(0, 8),
+      name: holiday.name,
+      date: holiday.date,
+    };
+    holidays.push(newHoliday);
+    saveReadinessHolidaysData(holidays);
+    return newHoliday;
+  }
+
+  static async deleteReadinessHoliday(id: string) {
+    let holidays = getReadinessHolidaysData();
+    holidays = holidays.filter((h: any) => h.id !== id);
+    saveReadinessHolidaysData(holidays);
+    return { success: true };
+  }
+
+  static async activateUnit(unitId: string, ready: boolean, companyId?: string | null) {
+    const unit = await this.getUnitById(unitId, companyId);
+    let meta: any = {};
+    try { meta = JSON.parse(unit.readiness?.notes || '{}'); } catch {}
+    meta.unit_status = ready ? 'ACTIVE' : 'INACTIVE';
+
+    await prisma.unit.update({
+      where: { id: unit.id },
+      data: { isActive: ready },
+    });
+
+    await prisma.unitReadiness.upsert({
+      where: { unitId: unit.id },
+      update: { notes: JSON.stringify(meta) },
+      create: { unitId: unit.id, notes: JSON.stringify(meta) },
+    });
+
+    return { success: true, isActive: ready };
   }
 }
 

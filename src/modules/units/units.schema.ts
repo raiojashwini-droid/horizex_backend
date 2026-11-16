@@ -60,6 +60,6 @@ export const updateReadinessSchema = z.object({
     paintComplete: z.boolean().optional(),
     repairComplete: z.boolean().optional(),
     notes: z.string().optional(),
-  }),
+  }).passthrough(),
 });
 

@@ -180,7 +180,11 @@ export class RentRollService {
       for (const unit of prop.units) {
         totalUnits += 1;
         const ext = extendedMap.get(unit.id) || {};
-        const rentalMode = ext.rentalMode || 'FULL_UNIT';
+        const activeBedroomLeases = (unit.leases || []).filter(
+          (l: any) => l.leaseType === 'Bedroom Lease' || !!l.bedroomId
+        );
+        const hasBedroomLease = activeBedroomLeases.length > 0;
+        const rentalMode = (hasBedroomLease || ext.rentalMode === 'BEDROOM_WISE') ? 'BEDROOM_WISE' : (ext.rentalMode || 'FULL_UNIT');
         const isTemp = ext.isTemporaryAccommodation === true;
         const tempRelocatedTo = ext.temporaryUnitId;
         const isReserved = ext.reservedFlag === true;
@@ -192,32 +196,78 @@ export class RentRollService {
 
         if (rentalMode === 'BEDROOM_WISE') {
           // Bedroom-Wise unit handling
-          let bedrooms: any[] = [];
+          const bedCount = unit.bedrooms || 2;
+          const perBedRent = (unit.unitType?.singleBedroomRate && Number(unit.unitType.singleBedroomRate) > 0)
+            ? Number(unit.unitType.singleBedroomRate)
+            : Math.round(potentialRent / bedCount);
+
+          // Get raw bedroom details/identifiers
+          let bedIdents: string[] = [];
           if (ext.bedroomDetails) {
             try {
-              bedrooms = typeof ext.bedroomDetails === 'string'
-                ? JSON.parse(ext.bedroomDetails)
-                : ext.bedroomDetails;
+              const parsed = typeof ext.bedroomDetails === 'string' ? JSON.parse(ext.bedroomDetails) : ext.bedroomDetails;
+              if (Array.isArray(parsed)) {
+                bedIdents = parsed.map((item: any) => typeof item === 'string' ? item : (item.bedroomNumber || item.id || ''));
+              }
             } catch (_) {}
           }
 
-          if (!bedrooms || bedrooms.length === 0) {
-            const bedCount = unit.bedrooms || 2;
-            const perBedRent = Math.round(potentialRent / bedCount);
-            bedrooms = Array.from({ length: bedCount }).map((_, i) => ({
-              id: `bed-${unit.id}-${i + 1}`,
-              bedroomNumber: String(i + 1),
-              potentialRent: perBedRent,
-              monthlyRent: 0,
-              grossRent: perBedRent,
-              promotionalDiscount: 0,
-              status: 'Vacant',
-              tenantName: '-',
-              startDate: null,
-              endDate: null,
-              outstandingRent: 0,
-              outstandingDeposit: 0,
-            }));
+          let bedrooms: any[] = [];
+          for (let i = 0; i < bedCount; i++) {
+            const bedNumStr = String(i + 1);
+            const bedIdent = bedIdents[i] || `${unit.unitNumber}-${bedNumStr}`;
+
+            // Match active lease by bedroomId
+            const matchingLease = activeBedroomLeases.find((l: any) => {
+              const bId = String(l.bedroomId || '').trim();
+              return bId === bedNumStr || bId === bedIdent || bId.endsWith(`-${bedNumStr}`) || bId === `Bedroom ${bedNumStr}`;
+            });
+
+            if (matchingLease) {
+              const actualRent = Number(matchingLease.rentAmount || 0);
+              let outRent = 0;
+              let outDeposit = 0;
+              const invList = invoiceMap.get(matchingLease.id) || matchingLease.invoices || [];
+              for (const inv of invList) {
+                const bal = Math.max(0, Number(inv.amountDue) - Number(inv.amountPaid || 0));
+                if (inv.category === 'SECURITY_DEPOSIT') outDeposit += bal;
+                else outRent += bal;
+              }
+
+              const tName = matchingLease.tenant
+                ? `${matchingLease.tenant.firstName || ''} ${matchingLease.tenant.lastName || ''}`.trim()
+                : 'Resident';
+
+              bedrooms.push({
+                id: `bed-${matchingLease.id}`,
+                bedroomNumber: bedNumStr,
+                potentialRent: perBedRent,
+                monthlyRent: actualRent,
+                grossRent: actualRent,
+                promotionalDiscount: 0,
+                status: 'Occupied',
+                tenantName: tName,
+                startDate: matchingLease.startDate ? new Date(matchingLease.startDate).toISOString() : null,
+                endDate: matchingLease.endDate ? new Date(matchingLease.endDate).toISOString() : null,
+                outstandingRent: outRent,
+                outstandingDeposit: outDeposit,
+              });
+            } else {
+              bedrooms.push({
+                id: `bed-${unit.id}-${bedNumStr}`,
+                bedroomNumber: bedNumStr,
+                potentialRent: perBedRent,
+                monthlyRent: 0,
+                grossRent: perBedRent,
+                promotionalDiscount: 0,
+                status: 'Vacant',
+                tenantName: '-',
+                startDate: null,
+                endDate: null,
+                outstandingRent: 0,
+                outstandingDeposit: 0,
+              });
+            }
           }
 
           const hasAnyOccupiedOrReserved = bedrooms.some(

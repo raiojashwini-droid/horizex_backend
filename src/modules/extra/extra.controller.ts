@@ -9,11 +9,11 @@ export const listUnitTypes = async (req: Request, res: Response, next: NextFunct
     const unitTypes = await prisma.unitType.findMany({
       orderBy: { name: 'asc' },
     });
-    const mapped = unitTypes.map(ut => ({
+    const mapped = unitTypes.map((ut: any) => ({
       ...ut,
       typeName: ut.name,
       fullUnitRate: ut.marketRent || 0,
-      singleBedroomRate: 0,
+      singleBedroomRate: Number(ut.singleBedroomRate || 0),
     }));
     return sendSuccess(res, mapped, 200);
   } catch (err) {
@@ -26,18 +26,20 @@ export const createUnitType = async (req: Request, res: Response, next: NextFunc
     const name = req.body.name || req.body.typeName || 'Standard Unit';
     const code = req.body.code || (name ? name.replace(/[^a-zA-Z0-9]/g, '_').toUpperCase() : `TYPE_${Date.now()}`);
     const marketRent = Number(req.body.marketRent || req.body.fullUnitRate) || 1200;
-    const created = await prisma.unitType.create({
+    const singleBedroomRate = Number(req.body.singleBedroomRate) || 0;
+    const created: any = await prisma.unitType.create({
       data: {
         name,
         code,
         marketRent,
-      },
+        singleBedroomRate,
+      } as any,
     });
     return sendSuccess(res, {
       ...created,
       typeName: created.name,
       fullUnitRate: created.marketRent,
-      singleBedroomRate: 0,
+      singleBedroomRate: Number(created.singleBedroomRate || singleBedroomRate),
     }, 201);
   } catch (err) {
     return next(err);
@@ -49,12 +51,14 @@ export const updateUnitType = async (req: Request, res: Response, next: NextFunc
     const name = req.body.name || req.body.typeName;
     const code = req.body.code;
     const marketRent = req.body.marketRent !== undefined ? Number(req.body.marketRent) : (req.body.fullUnitRate !== undefined ? Number(req.body.fullUnitRate) : undefined);
+    const singleBedroomRate = req.body.singleBedroomRate !== undefined ? Number(req.body.singleBedroomRate) : undefined;
     const data: any = {};
     if (name) data.name = name;
     if (code) data.code = code;
     if (marketRent !== undefined) data.marketRent = marketRent;
+    if (singleBedroomRate !== undefined) data.singleBedroomRate = singleBedroomRate;
 
-    const updated = await prisma.unitType.update({
+    const updated: any = await prisma.unitType.update({
       where: { id: req.params.id },
       data,
     });
@@ -62,7 +66,7 @@ export const updateUnitType = async (req: Request, res: Response, next: NextFunc
       ...updated,
       typeName: updated.name,
       fullUnitRate: updated.marketRent,
-      singleBedroomRate: 0,
+      singleBedroomRate: Number(updated.singleBedroomRate || 0),
     }, 200);
   } catch (err) {
     return next(err);

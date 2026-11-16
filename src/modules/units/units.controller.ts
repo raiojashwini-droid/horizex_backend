@@ -91,7 +91,7 @@ export const getReadinessDashboard = async (req: Request, res: Response, next: N
     const isSuperAdmin = req.user?.role === 'SUPER_ADMIN' || req.user?.role === 'ADMIN';
     const companyId = isSuperAdmin ? undefined : req.user?.effectiveCompanyId;
 
-    const dashboard = await UnitsService.getReadinessDashboard(companyId);
+    const dashboard = await UnitsService.getReadinessDashboard(companyId, req.query);
     return sendSuccess(res, dashboard, 200);
   } catch (err) {
     return next(err);
@@ -115,7 +115,7 @@ export const getReadinessStats = async (req: Request, res: Response, next: NextF
     const isSuperAdmin = req.user?.role === 'SUPER_ADMIN' || req.user?.role === 'ADMIN';
     const companyId = isSuperAdmin ? undefined : req.user?.effectiveCompanyId;
 
-    const stats = await UnitsService.getReadinessStats(companyId);
+    const stats = await UnitsService.getReadinessStats(companyId, req.query);
     return sendSuccess(res, stats, 200);
   } catch (err) {
     return next(err);
@@ -134,6 +134,68 @@ export const updateUnitReadiness = async (req: Request, res: Response, next: Nex
       req.user?.userId
     );
     return sendSuccess(res, updated, 200);
+  } catch (err) {
+    return next(err);
+  }
+};
+
+export const getReadinessSettings = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const settings = await UnitsService.getReadinessSettings();
+    return sendSuccess(res, settings, 200);
+  } catch (err) {
+    return next(err);
+  }
+};
+
+export const updateReadinessSettings = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const isSuperAdmin = req.user?.role === 'SUPER_ADMIN' || req.user?.role === 'ADMIN';
+    const companyId = isSuperAdmin ? undefined : req.user?.effectiveCompanyId;
+    const { settings, triggerRecalculate } = req.body;
+
+    const updated = await UnitsService.updateReadinessSettings(settings, triggerRecalculate, companyId);
+    return sendSuccess(res, updated, 200);
+  } catch (err) {
+    return next(err);
+  }
+};
+
+export const getReadinessHolidays = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const holidays = await UnitsService.getReadinessHolidays();
+    return sendSuccess(res, holidays, 200);
+  } catch (err) {
+    return next(err);
+  }
+};
+
+export const addReadinessHoliday = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const holiday = await UnitsService.addReadinessHoliday(req.body);
+    return sendSuccess(res, holiday, 201);
+  } catch (err) {
+    return next(err);
+  }
+};
+
+export const deleteReadinessHoliday = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const result = await UnitsService.deleteReadinessHoliday(req.params.id);
+    return sendSuccess(res, result, 200);
+  } catch (err) {
+    return next(err);
+  }
+};
+
+export const activateUnitReadiness = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const isSuperAdmin = req.user?.role === 'SUPER_ADMIN' || req.user?.role === 'ADMIN';
+    const companyId = isSuperAdmin ? undefined : req.user?.effectiveCompanyId;
+    const { ready } = req.body;
+
+    const result = await UnitsService.activateUnit(req.params.id, Boolean(ready), companyId);
+    return sendSuccess(res, result, 200);
   } catch (err) {
     return next(err);
   }
