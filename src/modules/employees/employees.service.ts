@@ -100,8 +100,11 @@ export class EmployeesService {
       return {
         id: u.id,
         employeeNo: meta.employeeNo || `EMP-APEX-2026-${u.id.slice(0, 5).toUpperCase()}`,
-        companyId: meta.companyId !== undefined ? meta.companyId : (u.companyId || 1),
-        buildingId: meta.buildingId !== undefined ? meta.buildingId : 1,
+        companyId: meta.companyId !== undefined ? meta.companyId : (u.companyId || null),
+        companyName: u.company?.name || meta.companyName || null,
+        company: u.company,
+        buildingId: meta.buildingId !== undefined ? meta.buildingId : null,
+        buildingName: meta.buildingName || meta.propertyName || '',
         department: meta.department || u.staffProfile?.department || 'Operations',
         firstName: u.firstName,
         lastName: u.lastName,
@@ -121,7 +124,7 @@ export class EmployeesService {
     });
 
     // Apply Filters
-    if (filters.companyId) {
+    if (filters.companyId && filters.companyId !== 'all') {
       mapped = mapped.filter((emp) => String(emp.companyId) === String(filters.companyId));
     }
     if (filters.buildingId) {

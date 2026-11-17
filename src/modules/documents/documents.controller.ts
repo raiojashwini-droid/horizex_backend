@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import { DocumentsService } from './documents.service';
 import { sendSuccess } from '../../utils/apiResponse.util';
+import { uploadBase64Image } from '../../config/cloudinary';
 
 export const getDocuments = async (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -33,11 +34,33 @@ export const uploadDocument = async (req: Request, res: Response, next: NextFunc
 
     const companyId = req.user?.effectiveCompanyId || (req.headers['x-company-context'] as string);
 
+    let fileUrl = req.body.fileUrl || null;
+    const fileBase64 = req.body.fileBase64 || (typeof fileUrl === 'string' && fileUrl.startsWith('data:') ? fileUrl : null);
+
+    // Attempt upload to Cloudinary if file data is present
+    if (fileBase64) {
+      try {
+        const cloudRes = await uploadBase64Image(fileBase64, 'horizex_documents');
+        if (cloudRes?.url) {
+          fileUrl = cloudRes.url;
+        }
+      } catch (cloudErr: any) {
+        console.warn('Cloudinary upload warning:', cloudErr?.message || cloudErr);
+        // Fallback: keep the base64 data URL so document content is preserved
+        if (!fileUrl) {
+          fileUrl = fileBase64;
+        }
+      }
+    }
+
     const doc = await DocumentsService.createDocument({
       name: req.body.name || 'Uploaded_Document.pdf',
       type: req.body.type || 'Other',
       expiryDate: req.body.expiryDate || null,
       links,
+      fileUrl: fileUrl || null,
+      fileSize: req.body.fileSize || '1.0 MB',
+      mimeType: req.body.mimeType || 'application/pdf',
       companyId: companyId && companyId !== 'all' ? companyId : null,
     });
 
@@ -86,6 +109,26 @@ export const downloadDocument = async (req: Request, res: Response, next: NextFu
   try {
     const { id } = req.params;
     const doc = await DocumentsService.getDocumentById(id);
+
+    // If document has a remote Cloudinary URL, redirect directly to it
+    if (doc?.fileUrl && (doc.fileUrl.startsWith('http://') || doc.fileUrl.startsWith('https://'))) {
+      return res.redirect(doc.fileUrl);
+    }
+
+    // If document has a Base64 data URL, stream the decoded file buffer
+    if (doc?.fileUrl && doc.fileUrl.startsWith('data:')) {
+      const matches = doc.fileUrl.match(/^data:([^;]+);base64,(.+)$/);
+      if (matches) {
+        const mimeType = matches[1];
+        const buffer = Buffer.from(matches[2], 'base64');
+        const docName = doc.name || `Document_${id}.pdf`;
+        const disposition = req.query.disposition === 'inline' ? 'inline' : 'attachment';
+
+        res.setHeader('Content-Type', mimeType);
+        res.setHeader('Content-Disposition', `${disposition}; filename="${docName}"`);
+        return res.send(buffer);
+      }
+    }
 
     const docName = doc?.name || `Document_${id}.pdf`;
     const disposition = req.query.disposition === 'inline' ? 'inline' : 'attachment';

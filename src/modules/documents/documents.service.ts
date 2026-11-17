@@ -163,7 +163,7 @@ export class DocumentsService {
       JSON.stringify(links)
     );
 
-    return { id, name: data.name, type: data.type, success: true };
+    return { id, name: data.name, type: data.type, fileUrl: data.fileUrl || `/api/admin/documents/${id}/download`, success: true };
   }
 
   static async updateDocument(id: string, data: {

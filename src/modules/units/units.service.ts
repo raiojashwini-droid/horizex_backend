@@ -180,6 +180,8 @@ export class UnitsService {
               tenantName: activeLease.tenant
                 ? `${activeLease.tenant.firstName} ${activeLease.tenant.lastName}`
                 : 'Leased',
+              bedroomId: activeLease.bedroomId || null,
+              leaseType: activeLease.leaseType || (activeLease.bedroomId ? 'Bedroom Lease' : 'Full Unit Lease'),
             }
           : null,
       };
@@ -1005,8 +1007,23 @@ export class UnitsService {
         meta.completionDates[stepKey] = nowIso;
         meta[`${stepKey}_completed_date`] = nowIso;
 
-        if (stepKey === 'unit_ready' && isDone) {
+        const stepKeys = ['gc_delivered', 'gc_deficiencies', 'gc_cleaned', 'ffe_installed', 'final_cleaning', 'ose_installed', 'unit_ready'];
+        const allStepsDone = stepKeys.every(k => Boolean(meta.completion?.[k] || meta[`${k}_completed`]));
+
+        if ((stepKey === 'unit_ready' && isDone) || allStepsDone) {
           targetStage = 'READY_TO_LEASE';
+          meta.classification = 'Completed';
+          meta.unit_status = 'ACTIVE';
+          meta.current_owner = 'Horizex Management';
+          meta.completion.unit_ready = true;
+          meta.unit_ready_completed = true;
+        } else if (stepKey === 'unit_ready' && !isDone) {
+          targetStage = 'MAINTENANCE_REPAIRS';
+          meta.classification = 'New Construction';
+          meta.unit_status = 'INACTIVE';
+          meta.current_owner = 'GC';
+          meta.completion.unit_ready = false;
+          meta.unit_ready_completed = false;
         } else if (stepKey === 'gc_delivered' && isDone && targetStage === 'NOTICE_GIVEN') {
           targetStage = 'MAINTENANCE_REPAIRS';
         }
@@ -1073,10 +1090,19 @@ export class UnitsService {
       },
     });
 
+    const hasActiveLease = unit.leases && unit.leases.some((l: any) => l.status === 'ACTIVE' && l.isActive);
     if (targetStage === 'READY_TO_LEASE') {
       await prisma.unit.update({
         where: { id: unit.id },
-        data: { status: 'VACANT' },
+        data: {
+          isActive: true,
+          ...(hasActiveLease ? {} : { status: 'VACANT' }),
+        },
+      });
+    } else if (data.completed !== undefined && !data.completed && !hasActiveLease) {
+      await prisma.unit.update({
+        where: { id: unit.id },
+        data: { status: 'TURNOVER' },
       });
     }
 
@@ -1244,17 +1270,37 @@ export class UnitsService {
     const unit = await this.getUnitById(unitId, companyId);
     let meta: any = {};
     try { meta = JSON.parse(unit.readiness?.notes || '{}'); } catch {}
+    const hasActiveLease = unit.leases && unit.leases.some((l: any) => l.status === 'ACTIVE' && l.isActive);
+
     meta.unit_status = ready ? 'ACTIVE' : 'INACTIVE';
+    meta.classification = ready ? 'Completed' : 'New Construction';
+    meta.current_owner = ready ? 'Horizex Management' : 'GC';
+    meta.completion = meta.completion || {};
+    meta.completion.unit_ready = ready;
+    meta.unit_ready_completed = ready;
+    meta.completionDates = meta.completionDates || {};
+    meta.completionDates.unit_ready = ready ? (meta.completionDates.unit_ready || new Date().toISOString()) : null;
+    meta.unit_ready_completed_date = meta.completionDates.unit_ready;
 
     await prisma.unit.update({
       where: { id: unit.id },
-      data: { isActive: ready },
+      data: {
+        isActive: ready,
+        ...(hasActiveLease ? {} : { status: ready ? 'VACANT' : 'TURNOVER' }),
+      },
     });
 
     await prisma.unitReadiness.upsert({
       where: { unitId: unit.id },
-      update: { notes: JSON.stringify(meta) },
-      create: { unitId: unit.id, notes: JSON.stringify(meta) },
+      update: {
+        stage: ready ? 'READY_TO_LEASE' : 'MAINTENANCE_REPAIRS',
+        notes: JSON.stringify(meta),
+      },
+      create: {
+        unitId: unit.id,
+        stage: ready ? 'READY_TO_LEASE' : 'MAINTENANCE_REPAIRS',
+        notes: JSON.stringify(meta),
+      },
     });
 
     return { success: true, isActive: ready };

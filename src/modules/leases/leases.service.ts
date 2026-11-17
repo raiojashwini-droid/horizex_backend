@@ -29,74 +29,18 @@ export class LeasesService {
     });
 
     if (renewals.length === 0) {
-      const now = new Date();
-      const currentYear = now.getFullYear();
-      const currentMonth = String(now.getMonth() + 1).padStart(2, '0');
-      return [
-        {
-          id: 'ren-001',
-          leaseId: 'lease-demo-1',
-          propertyId: 'bld-001',
-          propertyName: 'Parkview Heights',
-          unitNumber: '304',
-          tenantName: 'Alexandre Tremblay',
-          tenantEmail: 'a.tremblay@deloitte.com',
-          tenantPhone: '+1 (514) 555-0192',
-          companyName: 'Horizex Real Estate Corp',
-          leaseEnd: `${currentYear}-12-31`,
-          renewalDueDate: `${currentYear}-${currentMonth}-28`,
-          proposedRent: 1950,
-          proposedEndDate: `${currentYear + 1}-12-31`,
-          status: 'OFFER_SENT',
-          noticeSent: true,
-          noticeSentDate: `${currentYear}-${currentMonth}-10`,
-          createdAt: new Date().toISOString(),
-        },
-        {
-          id: 'ren-002',
-          leaseId: 'lease-demo-2',
-          propertyId: 'bld-001',
-          propertyName: 'Parkview Heights',
-          unitNumber: '101',
-          tenantName: 'Demo Tenant',
-          tenantEmail: 'tenant@property.com',
-          tenantPhone: '+1 (514) 555-0191',
-          companyName: 'Horizex Real Estate Corp',
-          leaseEnd: `${currentYear}-11-30`,
-          renewalDueDate: `${currentYear}-${currentMonth}-15`,
-          proposedRent: 1750,
-          proposedEndDate: `${currentYear + 1}-11-30`,
-          status: 'NEGOTIATING',
-          noticeSent: true,
-          noticeSentDate: `${currentYear}-${currentMonth}-05`,
-          createdAt: new Date().toISOString(),
-        },
-        {
-          id: 'ren-003',
-          leaseId: 'lease-demo-3',
-          propertyId: 'bld-002',
-          propertyName: 'Downtown Executive Suites',
-          unitNumber: '102',
-          tenantName: 'Sophia Patel',
-          tenantEmail: 'sophia.p@shopify.com',
-          tenantPhone: '+1 (514) 555-0144',
-          companyName: 'Horizex Real Estate Corp',
-          leaseEnd: `${currentYear}-10-31`,
-          renewalDueDate: `${currentYear}-${currentMonth}-20`,
-          proposedRent: 1050,
-          proposedEndDate: `${currentYear + 1}-10-31`,
-          status: 'ACCEPTED',
-          noticeSent: true,
-          noticeSentDate: `${currentYear}-${currentMonth}-01`,
-          createdAt: new Date().toISOString(),
-        },
-      ];
+      return [];
     }
 
     const formatDate = (d: Date | string | null | undefined) => {
       if (!d) return '-';
+      if (typeof d === 'string' && /^\d{2}[-/]\d{2}[-/]\d{4}$/.test(d.trim())) {
+        const [day, m, y] = d.trim().split(/[-/]/);
+        d = `${y}-${m}-${day}`;
+      }
       const date = new Date(d);
-      return date.toLocaleDateString('en-CA', { month: 'short', day: '2-digit', year: 'numeric' });
+      if (isNaN(date.getTime())) return String(d);
+      return date.toLocaleDateString('en-CA', { timeZone: 'UTC', month: 'short', day: '2-digit', year: 'numeric' });
     };
 
     return renewals.map((r: any) => {
@@ -240,9 +184,15 @@ export class LeasesService {
       ];
     }
 
-    const formatDate = (d: Date | string) => {
+    const formatDate = (d: Date | string | null | undefined) => {
+      if (!d) return '-';
+      if (typeof d === 'string' && /^\d{2}[-/]\d{2}[-/]\d{4}$/.test(d.trim())) {
+        const [day, m, y] = d.trim().split(/[-/]/);
+        d = `${y}-${m}-${day}`;
+      }
       const date = new Date(d);
-      return date.toLocaleDateString('en-CA', { month: 'short', day: '2-digit', year: 'numeric' });
+      if (isNaN(date.getTime())) return String(d);
+      return date.toLocaleDateString('en-CA', { timeZone: 'UTC', month: 'short', day: '2-digit', year: 'numeric' });
     };
 
     const now = new Date();
@@ -384,9 +334,13 @@ export class LeasesService {
       if (!val) return new Date(NaN);
       if (val instanceof Date) return val;
       const str = String(val).trim();
+      let iso = str;
       if (/^\d{2}[-/]\d{2}[-/]\d{4}$/.test(str)) {
         const [d, m, y] = str.split(/[-/]/);
-        return new Date(`${y}-${m}-${d}`);
+        iso = `${y}-${m}-${d}`;
+      }
+      if (/^\d{4}-\d{2}-\d{2}$/.test(iso)) {
+        return new Date(`${iso}T00:00:00.000Z`);
       }
       return new Date(str);
     };

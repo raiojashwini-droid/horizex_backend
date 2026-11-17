@@ -4,9 +4,13 @@ import { sendSuccess } from '../../utils/apiResponse.util';
 
 export const listEmployees = async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const isSuperAdmin = req.user?.role === 'SUPER_ADMIN' || req.user?.role === 'ADMIN';
+    const queryCompanyId = (req.query.companyId as string) || (req.headers['x-company-context'] as string);
+    const companyId = queryCompanyId && queryCompanyId !== 'all' ? queryCompanyId : (isSuperAdmin ? undefined : req.user?.effectiveCompanyId);
+
     const filters = {
       ...req.query,
-      companyId: req.query.companyId || req.user?.effectiveCompanyId,
+      companyId: companyId && companyId !== 'all' ? companyId : undefined,
     };
     const employees = await EmployeesService.listEmployees(filters);
     return sendSuccess(res, employees, 200);

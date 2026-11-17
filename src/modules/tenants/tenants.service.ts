@@ -83,6 +83,7 @@ export class TenantsService {
           : (meta.unitNumber ? `Unit ${meta.unitNumber}` : 'No Active Lease'),
         activeLeaseId: activeLease?.id || null,
         leaseStatus: activeLease ? 'Active' : (type === 'Resident' || type === 'RESIDENT' ? 'Resident' : 'None'),
+        rent: activeLease?.rentAmount ? Number(activeLease.rentAmount) : 0,
         balanceDue: Math.round(totalBalanceDue * 100) / 100,
         createdAt: tenant.createdAt,
         parentId: meta.parentId || null,

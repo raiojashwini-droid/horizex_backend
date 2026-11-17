@@ -5,7 +5,8 @@ import { sendSuccess } from '../../utils/apiResponse.util';
 export const listRenewals = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const isSuperAdmin = req.user?.role === 'SUPER_ADMIN' || req.user?.role === 'ADMIN';
-    const companyId = isSuperAdmin ? undefined : req.user?.effectiveCompanyId;
+    const queryCompanyId = (req.query.companyId as string) || (req.headers['x-company-context'] as string);
+    const companyId = queryCompanyId && queryCompanyId !== 'all' ? queryCompanyId : (isSuperAdmin ? undefined : req.user?.effectiveCompanyId);
 
     const renewals = await LeasesService.listRenewals(companyId);
     return sendSuccess(res, renewals, 200);
@@ -17,7 +18,8 @@ export const listRenewals = async (req: Request, res: Response, next: NextFuncti
 export const getRenewal = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const isSuperAdmin = req.user?.role === 'SUPER_ADMIN' || req.user?.role === 'ADMIN';
-    const companyId = isSuperAdmin ? undefined : req.user?.effectiveCompanyId;
+    const queryCompanyId = (req.query.companyId as string) || (req.headers['x-company-context'] as string);
+    const companyId = queryCompanyId && queryCompanyId !== 'all' ? queryCompanyId : (isSuperAdmin ? undefined : req.user?.effectiveCompanyId);
 
     const renewal = await LeasesService.getRenewalById(req.params.id, companyId);
     return sendSuccess(res, renewal, 200);
@@ -29,7 +31,8 @@ export const getRenewal = async (req: Request, res: Response, next: NextFunction
 export const sendRenewalNotice = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const isSuperAdmin = req.user?.role === 'SUPER_ADMIN' || req.user?.role === 'ADMIN';
-    const companyId = isSuperAdmin ? undefined : req.user?.effectiveCompanyId;
+    const queryCompanyId = (req.query.companyId as string) || (req.headers['x-company-context'] as string);
+    const companyId = queryCompanyId && queryCompanyId !== 'all' ? queryCompanyId : (isSuperAdmin ? undefined : req.user?.effectiveCompanyId);
 
     const result = await LeasesService.sendRenewalNotice(req.params.id, companyId, req.user?.userId);
     return sendSuccess(res, result, 200);
@@ -41,7 +44,8 @@ export const sendRenewalNotice = async (req: Request, res: Response, next: NextF
 export const updateRenewalStatus = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const isSuperAdmin = req.user?.role === 'SUPER_ADMIN' || req.user?.role === 'ADMIN';
-    const companyId = isSuperAdmin ? undefined : req.user?.effectiveCompanyId;
+    const queryCompanyId = (req.query.companyId as string) || (req.headers['x-company-context'] as string);
+    const companyId = queryCompanyId && queryCompanyId !== 'all' ? queryCompanyId : (isSuperAdmin ? undefined : req.user?.effectiveCompanyId);
 
     const result = await LeasesService.updateRenewalStatus(req.params.id, companyId, req.body.status, req.user?.userId);
     return sendSuccess(res, result, 200);
@@ -53,7 +57,8 @@ export const updateRenewalStatus = async (req: Request, res: Response, next: Nex
 export const listLeases = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const isSuperAdmin = req.user?.role === 'SUPER_ADMIN' || req.user?.role === 'ADMIN';
-    const companyId = isSuperAdmin ? undefined : req.user?.effectiveCompanyId;
+    const queryCompanyId = (req.query.companyId as string) || (req.headers['x-company-context'] as string);
+    const companyId = queryCompanyId && queryCompanyId !== 'all' ? queryCompanyId : (isSuperAdmin ? undefined : req.user?.effectiveCompanyId);
 
     const leases = await LeasesService.listLeases({
       companyId,
@@ -81,7 +86,8 @@ export const getLease = async (req: Request, res: Response, next: NextFunction) 
 export const createLease = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const isSuperAdmin = req.user?.role === 'SUPER_ADMIN' || req.user?.role === 'ADMIN';
-    const companyId = isSuperAdmin ? undefined : req.user?.effectiveCompanyId;
+    const queryCompanyId = (req.query.companyId as string) || (req.headers['x-company-context'] as string);
+    const companyId = queryCompanyId && queryCompanyId !== 'all' ? queryCompanyId : (isSuperAdmin ? undefined : req.user?.effectiveCompanyId);
 
     const lease = await LeasesService.createLease(req.body, companyId, req.user?.userId);
     return sendSuccess(res, lease, 201);
@@ -122,7 +128,8 @@ export const addMoveInspection = async (req: Request, res: Response, next: NextF
 export const updateLease = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const isSuperAdmin = req.user?.role === 'SUPER_ADMIN' || req.user?.role === 'ADMIN';
-    const companyId = isSuperAdmin ? undefined : req.user?.effectiveCompanyId;
+    const queryCompanyId = (req.query.companyId as string) || (req.headers['x-company-context'] as string);
+    const companyId = queryCompanyId && queryCompanyId !== 'all' ? queryCompanyId : (isSuperAdmin ? undefined : req.user?.effectiveCompanyId);
 
     const lease = await LeasesService.updateLease(req.params.id, companyId, req.body, req.user?.userId);
     return sendSuccess(res, lease, 200);
@@ -134,7 +141,8 @@ export const updateLease = async (req: Request, res: Response, next: NextFunctio
 export const sendLeaseCredentials = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const isSuperAdmin = req.user?.role === 'SUPER_ADMIN' || req.user?.role === 'ADMIN';
-    const companyId = isSuperAdmin ? undefined : req.user?.effectiveCompanyId;
+    const queryCompanyId = (req.query.companyId as string) || (req.headers['x-company-context'] as string);
+    const companyId = queryCompanyId && queryCompanyId !== 'all' ? queryCompanyId : (isSuperAdmin ? undefined : req.user?.effectiveCompanyId);
 
     const result = await LeasesService.sendLeaseCredentials(req.params.id, companyId, req.user?.userId);
     return sendSuccess(res, result, 200);
@@ -146,7 +154,8 @@ export const sendLeaseCredentials = async (req: Request, res: Response, next: Ne
 export const deleteLease = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const isSuperAdmin = req.user?.role === 'SUPER_ADMIN' || req.user?.role === 'ADMIN';
-    const companyId = isSuperAdmin ? undefined : req.user?.effectiveCompanyId;
+    const queryCompanyId = (req.query.companyId as string) || (req.headers['x-company-context'] as string);
+    const companyId = queryCompanyId && queryCompanyId !== 'all' ? queryCompanyId : (isSuperAdmin ? undefined : req.user?.effectiveCompanyId);
 
     const result = await LeasesService.deleteLease(req.params.id, companyId, req.user?.userId);
     return sendSuccess(res, result, 200);

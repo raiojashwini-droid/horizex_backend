@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { prisma } from '../../config/db';
 import { authenticate } from '../../middlewares/auth.middleware';
+import { uploadBase64Image } from '../../config/cloudinary';
 import crypto from 'crypto';
 
 const router = Router();
@@ -609,11 +610,21 @@ router.post('/documents', async (req: Request, res: Response) => {
 
     const { name, type, fileUrl, fileName, expiryDate } = req.body;
 
+    let finalFileUrl = fileUrl || null;
+    if (finalFileUrl && typeof finalFileUrl === 'string' && finalFileUrl.startsWith('data:')) {
+      try {
+        const cloudRes = await uploadBase64Image(finalFileUrl, 'horizex_tenant_documents');
+        if (cloudRes?.url) finalFileUrl = cloudRes.url;
+      } catch (err: any) {
+        console.warn('Tenant portal Cloudinary upload skipped/failed:', err?.message || err);
+      }
+    }
+
     const doc = await prisma.document.create({
       data: {
         name: name || fileName || 'Tenant_Document.pdf',
         type: type || 'General Document',
-        fileUrl: fileUrl || null,
+        fileUrl: finalFileUrl,
         mimeType: fileName?.endsWith('.png') ? 'image/png' : (fileName?.endsWith('.jpg') ? 'image/jpeg' : 'application/pdf'),
         expiryDate: expiryDate ? new Date(expiryDate) : null,
         companyId: tenant.companyId,
