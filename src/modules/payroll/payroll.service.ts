@@ -881,7 +881,7 @@ export class PayrollService {
         const runRecord = {
           ...rec,
           id: runId,
-          companyId: Number(companyId),
+          companyId: isNaN(Number(companyId)) ? String(companyId) : Number(companyId),
           payrollMonth: payrollMonth || rec.payrollMonth,
           periodStart: periodStart || rec.periodStart,
           periodEnd: periodEnd || rec.periodEnd,
@@ -933,7 +933,7 @@ export class PayrollService {
           employeeName: emp.name,
           employeeNo: emp.no,
           department: emp.dept,
-          companyId: Number(companyId),
+          companyId: isNaN(Number(companyId)) ? String(companyId) : Number(companyId),
           buildingId: 1,
           buildingName: 'Apex Corporate Plaza',
           payrollMonth: payrollMonth || new Date().toISOString().substring(0, 7),

@@ -352,7 +352,28 @@ export const deleteNote = async (req: Request, res: Response, next: NextFunction
 // Employee Clock-In / Clock-Out
 export const listClockLogs = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    let logs = await prisma.clockLog.findMany({
+    const isSuperAdmin = req.user?.role === 'SUPER_ADMIN' || req.user?.role === 'ADMIN';
+    const queryCompanyId = (req.query.companyId as string) || (req.headers['x-company-context'] as string);
+    const companyId = queryCompanyId && queryCompanyId !== 'all' ? queryCompanyId : (isSuperAdmin ? undefined : req.user?.effectiveCompanyId);
+
+    const where: any = {};
+    if (companyId && companyId !== 'all') {
+      where.staff = {
+        user: {
+          companyId,
+        },
+      };
+    }
+
+    if (req.query.department) {
+      where.staff = {
+        ...where.staff,
+        department: String(req.query.department),
+      };
+    }
+
+    const logs = await prisma.clockLog.findMany({
+      where,
       include: {
         staff: {
           include: {
@@ -362,74 +383,6 @@ export const listClockLogs = async (req: Request, res: Response, next: NextFunct
       },
       orderBy: { clockIn: 'desc' },
     });
-
-    if (logs.length === 0) {
-      const sarah = await prisma.staffProfile.findFirst({
-        where: { user: { firstName: { contains: 'Sarah', mode: 'insensitive' } } },
-      });
-      const mike = await prisma.staffProfile.findFirst({
-        where: { user: { firstName: { contains: 'Mike', mode: 'insensitive' } } },
-      });
-
-      if (sarah) {
-        await prisma.clockLog.create({
-          data: {
-            staffId: sarah.id,
-            clockIn: new Date('2026-06-29T09:30:00Z'),
-            clockOut: new Date('2026-06-29T17:00:00Z'),
-            totalHours: 6.5,
-            notes: JSON.stringify({
-              status: 'Late',
-              breakStart: '2026-06-29T12:00:00Z',
-              breakEnd: '2026-06-29T13:00:00Z',
-              overtimeHours: 0.0,
-            }),
-          },
-        });
-        await prisma.clockLog.create({
-          data: {
-            staffId: sarah.id,
-            clockIn: new Date('2026-06-28T09:00:00Z'),
-            clockOut: new Date('2026-06-28T17:00:00Z'),
-            totalHours: 7.0,
-            notes: JSON.stringify({
-              status: 'Present',
-              breakStart: '2026-06-28T12:00:00Z',
-              breakEnd: '2026-06-28T13:00:00Z',
-              overtimeHours: 0.0,
-            }),
-          },
-        });
-      }
-
-      if (mike) {
-        await prisma.clockLog.create({
-          data: {
-            staffId: mike.id,
-            clockIn: new Date('2026-06-29T08:55:00Z'),
-            clockOut: new Date('2026-06-29T18:00:00Z'),
-            totalHours: 8.0,
-            notes: JSON.stringify({
-              status: 'Present',
-              breakStart: '2026-06-29T12:00:00Z',
-              breakEnd: '2026-06-29T13:00:00Z',
-              overtimeHours: 1.0,
-            }),
-          },
-        });
-      }
-
-      logs = await prisma.clockLog.findMany({
-        include: {
-          staff: {
-            include: {
-              user: { select: { id: true, firstName: true, lastName: true, email: true, phone: true } },
-            },
-          },
-        },
-        orderBy: { clockIn: 'desc' },
-      });
-    }
 
     return sendSuccess(res, logs, 200);
   } catch (err) {
@@ -475,6 +428,17 @@ export const clockIn = async (req: Request, res: Response, next: NextFunction) =
 
     if (!staff) {
       throw new AppError('Staff profile not found', 404, 'STAFF_NOT_FOUND');
+    }
+
+    const existingActive = await prisma.clockLog.findFirst({
+      where: {
+        staffId: staff.id,
+        clockOut: null,
+      },
+    });
+
+    if (existingActive) {
+      return sendSuccess(res, existingActive, 200);
     }
 
     const log = await prisma.clockLog.create({

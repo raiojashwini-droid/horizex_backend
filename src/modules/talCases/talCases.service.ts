@@ -5,14 +5,14 @@ import { createAuditLog } from '../../utils/auditLogger.util';
 export class TalCasesService {
   static async listCases(companyId?: string | null) {
     const where: any = {};
-    if (companyId) {
+    if (companyId && companyId !== 'all') {
       where.property = { companyId };
     }
 
     return prisma.talCase.findMany({
       where,
       include: {
-        property: { select: { id: true, name: true, address: true } },
+        property: { select: { id: true, name: true, address: true, companyId: true } },
         unit: { select: { id: true, unitNumber: true } },
         tenant: { select: { id: true, firstName: true, lastName: true, phone: true } },
         events: {

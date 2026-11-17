@@ -4,8 +4,9 @@ import { sendSuccess } from '../../utils/apiResponse.util';
 
 export const listCases = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const isSuperAdmin = req.user?.role === 'SUPER_ADMIN';
-    const companyId = isSuperAdmin ? undefined : req.user?.effectiveCompanyId;
+    const isSuperAdmin = req.user?.role === 'SUPER_ADMIN' || req.user?.role === 'ADMIN';
+    const queryCompanyId = (req.query.companyId as string) || (req.headers['x-company-context'] as string);
+    const companyId = queryCompanyId && queryCompanyId !== 'all' ? queryCompanyId : (isSuperAdmin ? undefined : req.user?.effectiveCompanyId);
 
     const cases = await TalCasesService.listCases(companyId);
     return sendSuccess(res, cases, 200);
