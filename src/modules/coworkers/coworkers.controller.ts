@@ -6,14 +6,14 @@ import { sendSuccess, sendError } from '../../utils/apiResponse.util';
 
 export const MODULES_LIST = [
   'Dashboard', 'Overview', 'Vacancy Dashboard', 'Revenue Dashboard',
-  'Properties', 'Buildings', 'Units', 'Unit Readiness',
-  'Tenants', 'Tenant List', 'Vehicles', 'Insurance', 
-  'Shuttle',
+  'Properties', 'Buildings', 'Units',
+  'Tenants', 'Tenant List', 'Vehicles',
+  'Owners',
   'Leases',
   'Rent Roll',
   'Documents',
-  'Payments', 'Invoices', 'Payments Received', 'Outstanding Dues', 'Refunds',
-  'Accounting', 'General Ledger',
+  'Payments', 'Invoices', 'Payments Received', 'Outstanding Dues',
+  'Accounting',
   'TAL Cases',
   'Notes Hub',
   'Reports',
@@ -21,7 +21,6 @@ export const MODULES_LIST = [
   'Email Hub', 'Send Email', 'Email Templates', 'Sent Emails',
   'Maintenance',
   'Tickets',
-  'Inspections', 'Inspection List', 'Inspection Templates',
   'Settings'
 ];
 
@@ -121,7 +120,7 @@ export const getMyPermissions = async (req: Request, res: Response) => {
 
 export const createCoworker = async (req: Request, res: Response) => {
   try {
-    const { firstName, lastName, email, phone, permissions, companyId } = req.body;
+    const { firstName, lastName, email, phone, permissions, companyId, password } = req.body;
 
     if (!email || !firstName) {
       return sendError(res, 'BAD_REQUEST', 'First name and email are required', 400);
@@ -132,9 +131,11 @@ export const createCoworker = async (req: Request, res: Response) => {
       return sendError(res, 'CONFLICT', 'A user with this email already exists', 409);
     }
 
-    // Generate random temporary password hash
-    const tempPassword = crypto.randomBytes(8).toString('hex') + 'Aa1!';
-    const passwordHash = await bcrypt.hash(tempPassword, 10);
+    // Use password provided from form, or fallback only if not provided
+    const plainPassword = (password && String(password).trim().length >= 6)
+      ? String(password).trim()
+      : (crypto.randomBytes(8).toString('hex') + 'Aa1!');
+    const passwordHash = await bcrypt.hash(plainPassword, 10);
 
     const newUser = await prisma.user.create({
       data: {
@@ -198,16 +199,22 @@ export const createCoworker = async (req: Request, res: Response) => {
 export const updateCoworker = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const { firstName, lastName, phone, isActive, permissions } = req.body;
+    const { firstName, lastName, phone, isActive, permissions, password } = req.body;
+
+    const updateData: any = {
+      ...(firstName !== undefined && { firstName }),
+      ...(lastName !== undefined && { lastName }),
+      ...(phone !== undefined && { phone }),
+      ...(isActive !== undefined && { isActive }),
+    };
+
+    if (password && String(password).trim().length >= 6) {
+      updateData.passwordHash = await bcrypt.hash(String(password).trim(), 10);
+    }
 
     const user = await prisma.user.update({
       where: { id },
-      data: {
-        ...(firstName !== undefined && { firstName }),
-        ...(lastName !== undefined && { lastName }),
-        ...(phone !== undefined && { phone }),
-        ...(isActive !== undefined && { isActive }),
-      },
+      data: updateData,
     });
 
     if (Array.isArray(permissions)) {

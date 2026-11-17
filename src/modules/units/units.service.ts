@@ -290,7 +290,12 @@ export class UnitsService {
       throw new AppError('Unit not found or access denied', 404, 'UNIT_NOT_FOUND');
     }
 
-    const activeLease = unit.leases?.[0];
+    const isVacantOrTurnover = unit.status === 'VACANT' || unit.status === 'TURNOVER';
+    const trueActiveLease = !isVacantOrTurnover
+      ? unit.leases?.find((l) => l.status === 'ACTIVE' && l.isActive) || unit.leases?.[0]
+      : null;
+    const activeLease = trueActiveLease || null;
+
     let meta: any = {};
     try {
       meta = JSON.parse(unit.readiness?.notes || '{}');
@@ -299,6 +304,15 @@ export class UnitsService {
       (unit.readiness?.stage === 'MAINTENANCE_REPAIRS' ? 'New Construction' : 'Completed');
     const unit_status = meta.unit_status ||
       (classification === 'New Construction' ? 'INACTIVE' : 'ACTIVE');
+
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const vacantSince = unit.updatedAt ? new Date(unit.updatedAt) : new Date(unit.createdAt);
+    const marketAge = Math.max(0, Math.floor((today.getTime() - vacantSince.getTime()) / (1000 * 60 * 60 * 24)));
+    const availability_status = unit.status === 'VACANT' ? 'Available' : (unit.status === 'TURNOVER' ? 'Under Turnover' : 'Occupied');
+    const ready_for_leasing = Boolean(meta.unit_ready_completed || meta.completion?.unit_ready || unit.readiness?.stage === 'READY_TO_LEASE');
+    const civicNumber = (unit as any).civicNumber || unit.property?.address?.split(',')?.[0]?.trim() || unit.property?.address || null;
+    const current_owner = meta.current_owner || (unit.status === 'TURNOVER' ? 'GC' : 'Horizex Management');
 
     const count = Math.max(1, Number(unit.bedrooms) || 1);
     const identifiers: string[] = Array.isArray(unit.bedroomDetails)
@@ -343,17 +357,38 @@ export class UnitsService {
       companyName: (unit.property as any)?.company?.name || '',
       buildingName: unit.property?.name || '',
       building: unit.property?.name || '',
+      civicNumber,
       unitTypeName: unit.unitType?.name || '',
       unitType: unit.unitType?.name || '',
       unitTypeObj: unit.unitType,
+      marketAge,
+      marketAgeLabel: 'days',
+      availability_status,
+      current_owner,
+      ready_for_leasing,
       activeLease: activeLease
         ? {
             id: activeLease.id,
             tenantName: activeLease.tenant
               ? `${activeLease.tenant.firstName} ${activeLease.tenant.lastName}`
               : 'Leased',
+            startDate: activeLease.startDate ? activeLease.startDate.toISOString() : null,
+            endDate: activeLease.endDate ? activeLease.endDate.toISOString() : null,
+            amount: activeLease.rentAmount ? Number(activeLease.rentAmount) : Number(unit.baseRent),
           }
         : null,
+      occupants: activeLease && activeLease.tenant
+        ? [
+            {
+              id: activeLease.tenant.id,
+              name: `${activeLease.tenant.firstName} ${activeLease.tenant.lastName}`,
+              firstName: activeLease.tenant.firstName,
+              lastName: activeLease.tenant.lastName,
+              email: activeLease.tenant.email,
+              phone: activeLease.tenant.phone,
+            },
+          ]
+        : [],
     };
   }
 
