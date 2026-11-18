@@ -39,13 +39,14 @@ export class DocumentsService {
         COALESCE(t."firstName", u."firstName") as "userFirstName",
         COALESCE(t."lastName", u."lastName") as "userLastName",
         COALESCE(t.email, u.email) as "userEmail",
-        p.name as "propertyName",
+        COALESCE(p.name, pu.name) as "propertyName",
         un."unitNumber" as "unitNumber"
       FROM "Document" d
-      LEFT JOIN "Tenant" t ON d."userId" = t.id
+      LEFT JOIN "Tenant" t ON (d."userId" = t.id OR d."userId" = t."userId")
       LEFT JOIN "User" u ON d."userId" = u.id
       LEFT JOIN "Property" p ON d."propertyId" = p.id
       LEFT JOIN "Unit" un ON d."unitId" = un.id
+      LEFT JOIN "Property" pu ON un."propertyId" = pu.id
       WHERE d."isActive" = TRUE
     `;
 
@@ -70,16 +71,20 @@ export class DocumentsService {
     return rawDocs.map((r) => {
       let links: any[] = [];
       try {
-        links = typeof r.links === 'string' ? JSON.parse(r.links) : (r.links || []);
+        const parsed = typeof r.links === 'string' ? JSON.parse(r.links) : (r.links || []);
+        links = Array.isArray(parsed) ? parsed.filter((l: any) => l && l.entityType && l.entityType !== 'INSURANCE_META') : [];
       } catch (e) {
         links = [];
       }
+
+      const isCloudinary = r.fileUrl && (r.fileUrl.startsWith('http://') || r.fileUrl.startsWith('https://'));
+      const fileUrl = isCloudinary ? r.fileUrl : (r.fileUrl ? `/api/admin/documents/${r.id}/download` : `/api/admin/documents/${r.id}/download`);
 
       return {
         id: r.id,
         name: r.name,
         type: r.type,
-        fileUrl: r.fileUrl,
+        fileUrl,
         fileSize: r.fileSize || '1.2 MB',
         size: r.fileSize || '1.2 MB',
         mimeType: r.mimeType || 'application/pdf',

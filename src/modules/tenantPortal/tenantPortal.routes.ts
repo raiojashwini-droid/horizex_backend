@@ -651,7 +651,8 @@ Executed electronically. Verified by Horizex Property Management.
         isActive: true,
         OR: [
           { userId: tenant.id },
-          { userId: req.user?.userId }
+          { userId: req.user?.userId },
+          ...(activeLease ? [{ leaseId: activeLease.id }, { unitId: activeLease.unitId }] : [])
         ]
       }
     });
@@ -759,15 +760,23 @@ router.get('/insurance', async (req: Request, res: Response) => {
     if (insuranceDoc) {
       let meta: any = {};
       if (insuranceDoc.links && typeof insuranceDoc.links === 'object') {
-        meta = Array.isArray(insuranceDoc.links) ? (insuranceDoc.links[0] || {}) : insuranceDoc.links;
+        if (Array.isArray(insuranceDoc.links)) {
+          const metaObj = (insuranceDoc.links as any[]).find((l: any) => l.provider || l.policyNumber || l.meta) || (insuranceDoc.links as any[])[0] || {};
+          meta = metaObj.meta || metaObj;
+        } else {
+          meta = insuranceDoc.links;
+        }
       }
 
       const endDate = meta.endDate || (insuranceDoc.expiryDate ? insuranceDoc.expiryDate.toISOString().split('T')[0] : (activeLease?.endDate ? new Date(activeLease.endDate).toISOString().split('T')[0] : null));
       const isExpired = endDate && new Date(endDate) < new Date();
 
+      const isCloudinary = insuranceDoc.fileUrl && insuranceDoc.fileUrl.startsWith('http');
+      const docUrl = isCloudinary ? insuranceDoc.fileUrl : (insuranceDoc.fileUrl ? `/api/tenant/documents/${insuranceDoc.id}/download` : null);
+
       return res.json({
         id: insuranceDoc.id,
-        provider: meta.provider || insuranceDoc.name.replace(/\.pdf$/i, ''),
+        provider: meta.provider || insuranceDoc.name.replace(/\.pdf$/i, '').replace(/_Insurance_Policy$/i, '').replace(/_/g, ' ') || 'Tenant Insurance',
         policyNumber: meta.policyNumber || 'POL-ONFILE',
         coverageType: meta.coverageType || 'Tenant Liability & Contents ($2M)',
         startDate: meta.startDate || (activeLease?.startDate ? new Date(activeLease.startDate).toISOString().split('T')[0] : insuranceDoc.createdAt.toISOString().split('T')[0]),
@@ -775,7 +784,7 @@ router.get('/insurance', async (req: Request, res: Response) => {
         status: isExpired ? 'EXPIRED' : (meta.status || 'Active'),
         verified: meta.verified ?? true,
         rejectionReason: meta.rejectionReason || null,
-        documentUrl: insuranceDoc.fileUrl || null,
+        documentUrl: docUrl,
         documentName: insuranceDoc.name || 'Insurance_Certificate.pdf'
       });
     }
@@ -810,22 +819,48 @@ router.post('/insurance', async (req: Request, res: Response) => {
       verified: false
     };
 
+    let finalFileUrl = fileUrl || null;
+    if (finalFileUrl && typeof finalFileUrl === 'string' && finalFileUrl.startsWith('data:')) {
+      try {
+        const cloudRes = await uploadBase64Image(finalFileUrl, 'horizex_insurance_documents');
+        if (cloudRes?.url) finalFileUrl = cloudRes.url;
+      } catch (err: any) {
+        console.warn('Tenant portal insurance Cloudinary upload skipped/failed:', err?.message || err);
+      }
+    }
+
+    const propertyId = activeLease?.unit?.propertyId || tenant.propertyId || null;
+    const unitId = activeLease?.unitId || tenant.unitId || null;
+    const companyId = tenant.companyId || activeLease?.unit?.property?.companyId || null;
+
+    const entityLinks: any[] = [
+      { entityType: 'USER', entityId: tenant.id },
+      ...(propertyId ? [{ entityType: 'PROPERTY', entityId: propertyId }] : []),
+      ...(unitId ? [{ entityType: 'UNIT', entityId: unitId }] : []),
+      ...(activeLease?.id ? [{ entityType: 'LEASE', entityId: activeLease.id }] : []),
+      { entityType: 'INSURANCE_META', ...meta }
+    ];
+
     const doc = await prisma.document.create({
       data: {
-        name: fileName || `${provider}_Insurance_Policy.pdf`,
+        name: fileName || `${provider.replace(/\s+/g, '_')}_Insurance_Policy.pdf`,
         type: 'Insurance',
-        fileUrl: fileUrl || null,
-        mimeType: fileName?.endsWith('.png') ? 'image/png' : fileName?.endsWith('.jpg') ? 'image/jpeg' : 'application/pdf',
+        fileUrl: finalFileUrl,
+        fileSize: '1.2 MB',
+        mimeType: fileName?.endsWith('.png') ? 'image/png' : (fileName?.endsWith('.jpg') || fileName?.endsWith('.jpeg') ? 'image/jpeg' : 'application/pdf'),
         expiryDate: expiryDate,
-        companyId: tenant.companyId,
-        propertyId: activeLease?.unit?.propertyId || null,
-        unitId: activeLease?.unitId || null,
+        companyId,
+        propertyId,
+        unitId,
         userId: tenant.id,
         leaseId: activeLease?.id || null,
-        links: meta,
+        links: entityLinks,
         isActive: true
       }
     });
+
+    const isCloudinary = doc.fileUrl && doc.fileUrl.startsWith('http');
+    const docUrl = isCloudinary ? doc.fileUrl : (doc.fileUrl ? `/api/tenant/documents/${doc.id}/download` : null);
 
     return res.json({
       success: true,
@@ -833,7 +868,7 @@ router.post('/insurance', async (req: Request, res: Response) => {
       data: {
         id: doc.id,
         ...meta,
-        documentUrl: doc.fileUrl,
+        documentUrl: docUrl,
         documentName: doc.name
       }
     });
