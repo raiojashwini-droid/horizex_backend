@@ -23,7 +23,7 @@ import coworkersRouter from './modules/coworkers/coworkers.routes';
 import documentsRouter from './modules/documents/documents.routes';
 import emailRouter from './modules/email/email.routes';
 import integrationsRouter from './modules/integrations/integrations.routes';
-import { getAdminRentRoll, updatePotentialRent } from './modules/reports/rentRoll.controller';
+import reportsRouter from './modules/reports/reports.routes';
 import { getDashboardStats } from './modules/analytics/analytics.controller';
 import {
   getReadinessDashboard,
@@ -131,19 +131,8 @@ router.put(
   activateUnitReadiness
 );
 
-// Reports - Rent Roll Engine
-router.get(
-  '/admin/reports/rent-roll',
-  authenticate,
-  authorizeRoles('SUPER_ADMIN', 'COMPANY_ADMIN', 'PROPERTY_MANAGER', 'ACCOUNTANT', 'OWNER', 'ADMIN'),
-  getAdminRentRoll
-);
-router.put(
-  '/admin/reports/potential-rent',
-  authenticate,
-  authorizeRoles('SUPER_ADMIN', 'COMPANY_ADMIN', 'PROPERTY_MANAGER', 'ADMIN'),
-  updatePotentialRent
-);
+// Reports Engine & Custom Builder
+router.use('/admin/reports', reportsRouter);
 
 // Administrative & Operations Modules
 router.use('/admin/companies', companiesRouter);
