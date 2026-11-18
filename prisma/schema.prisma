@@ -201,11 +201,12 @@ model Property {
 }
 
 model UnitType {
-  id          String   @id @default(uuid())
-  name        String   // e.g. "1 Bedroom + Den", "Studio"
-  code        String   @unique
-  marketRent  Decimal  @db.Decimal(10, 2)
-  units       Unit[]
+  id                String   @id @default(uuid())
+  name              String   // e.g. "1 Bedroom + Den", "Studio"
+  code              String   @unique
+  marketRent        Decimal  @db.Decimal(10, 2)
+  singleBedroomRate Decimal? @default(0) @db.Decimal(10, 2)
+  units             Unit[]
 }
 
 model Unit {
