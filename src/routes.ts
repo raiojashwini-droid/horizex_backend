@@ -145,6 +145,7 @@ router.use('/admin/leases', leasesRouter);
 router.use('/admin/rental-applications', rentalApplicationsRouter);
 router.use('/admin', accountingRouter); // Mounts /payments, /invoices, /accounts, /outstanding-dues
 router.use('/admin/tickets', maintenanceRouter);
+router.use('/admin/maintenance', maintenanceRouter);
 router.use('/admin/tal-cases', talCasesRouter);
 router.use('/admin/analytics', analyticsRouter);
 router.use('/admin', extraRouter); // Mounts /unit-types, /insurance, /notes, /clock-in, /clock-out

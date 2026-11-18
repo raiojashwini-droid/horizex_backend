@@ -36,22 +36,26 @@ export class DocumentsService {
         d.id, d.name, d.type, d."fileUrl", d."fileSize", d."mimeType", d."expiryDate",
         d."companyId", d."propertyId", d."unitId", d."userId", d."leaseId", d."links",
         d."createdAt", d."updatedAt",
-        COALESCE(t."firstName", u."firstName") as "userFirstName",
-        COALESCE(t."lastName", u."lastName") as "userLastName",
-        COALESCE(t.email, u.email) as "userEmail",
-        COALESCE(p.name, pu.name) as "propertyName",
-        un."unitNumber" as "unitNumber"
+        COALESCE(t."firstName", u."firstName", lt."firstName") as "userFirstName",
+        COALESCE(t."lastName", u."lastName", lt."lastName") as "userLastName",
+        COALESCE(t.email, u.email, lt.email) as "userEmail",
+        COALESCE(p.name, pu.name, pl.name) as "propertyName",
+        COALESCE(un."unitNumber", lu."unitNumber") as "unitNumber"
       FROM "Document" d
-      LEFT JOIN "Tenant" t ON (d."userId" = t.id OR d."userId" = t."userId")
+      LEFT JOIN "Tenant" t ON d."userId" = t.id
       LEFT JOIN "User" u ON d."userId" = u.id
       LEFT JOIN "Property" p ON d."propertyId" = p.id
       LEFT JOIN "Unit" un ON d."unitId" = un.id
       LEFT JOIN "Property" pu ON un."propertyId" = pu.id
+      LEFT JOIN "Lease" l ON d."leaseId" = l.id
+      LEFT JOIN "Tenant" lt ON l."tenantId" = lt.id
+      LEFT JOIN "Unit" lu ON l."unitId" = lu.id
+      LEFT JOIN "Property" pl ON lu."propertyId" = pl.id
       WHERE d."isActive" = TRUE
     `;
 
     if (companyId && companyId !== 'all') {
-      query += ` AND (d."companyId" = '${companyId}' OR p."companyId" = '${companyId}' OR d."companyId" IS NULL)`;
+      query += ` AND (d."companyId" = '${companyId}' OR p."companyId" = '${companyId}' OR pu."companyId" = '${companyId}' OR pl."companyId" = '${companyId}' OR t."companyId" = '${companyId}' OR lt."companyId" = '${companyId}' OR d."companyId" IS NULL)`;
     }
 
     if (type && type !== 'All') {
@@ -77,8 +81,8 @@ export class DocumentsService {
         links = [];
       }
 
-      const isCloudinary = r.fileUrl && (r.fileUrl.startsWith('http://') || r.fileUrl.startsWith('https://'));
-      const fileUrl = isCloudinary ? r.fileUrl : (r.fileUrl ? `/api/admin/documents/${r.id}/download` : `/api/admin/documents/${r.id}/download`);
+      const isDirectUrl = r.fileUrl && (r.fileUrl.startsWith('http://') || r.fileUrl.startsWith('https://') || r.fileUrl.startsWith('data:'));
+      const fileUrl = isDirectUrl ? r.fileUrl : (r.fileUrl ? `/api/admin/documents/${r.id}/download` : `/api/admin/documents/${r.id}/download`);
 
       return {
         id: r.id,
@@ -147,6 +151,20 @@ export class DocumentsService {
       if (l.entityType === 'LEASE') leaseId = l.entityId;
     });
 
+    let resolvedCompanyId = data.companyId || null;
+    if (!resolvedCompanyId) {
+      if (propertyId) {
+        const prop = await prisma.property.findUnique({ where: { id: propertyId }, select: { companyId: true } }).catch(() => null);
+        if (prop?.companyId) resolvedCompanyId = prop.companyId;
+      } else if (unitId) {
+        const unit = await prisma.unit.findUnique({ where: { id: unitId }, select: { property: { select: { companyId: true } } } }).catch(() => null);
+        if (unit?.property?.companyId) resolvedCompanyId = unit.property.companyId;
+      } else if (userId) {
+        const tenant = await prisma.tenant.findUnique({ where: { id: userId }, select: { companyId: true } }).catch(() => null);
+        if (tenant?.companyId) resolvedCompanyId = tenant.companyId;
+      }
+    }
+
     const expiry = data.expiryDate ? new Date(data.expiryDate) : null;
 
     await prisma.$executeRawUnsafe(`
@@ -160,7 +178,7 @@ export class DocumentsService {
       data.fileSize || '1.0 MB',
       data.mimeType || 'application/pdf',
       expiry,
-      data.companyId || null,
+      resolvedCompanyId,
       propertyId,
       unitId,
       userId,
