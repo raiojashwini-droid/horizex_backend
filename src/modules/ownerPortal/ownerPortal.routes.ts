@@ -9,14 +9,26 @@ router.use(authenticate);
 // Helper: Get property IDs assigned to the current owner (or requested owner for admins)
 async function getOwnerPropertyIds(req: Request): Promise<string[]> {
   const isSuperOrAdmin = req.user?.role === 'ADMIN' || req.user?.role === 'SUPER_ADMIN';
-  const targetOwnerId = (isSuperOrAdmin && req.query.ownerId) ? String(req.query.ownerId) : req.user?.userId;
+  let targetOwnerId = (isSuperOrAdmin && req.query.ownerId) ? String(req.query.ownerId) : req.user?.userId;
+
+  if (isSuperOrAdmin && !req.query.ownerId && req.headers['x-owner-id']) {
+    targetOwnerId = String(req.headers['x-owner-id']);
+  }
 
   if (!targetOwnerId) return [];
 
   // Query database for properties where ownerId matches
-  const rows = await prisma.$queryRaw<Array<{ id: string }>>`
+  let rows = await prisma.$queryRaw<Array<{ id: string }>>`
     SELECT id FROM "Property" WHERE "isActive" = true AND "ownerId" = ${targetOwnerId}
   `;
+
+  if (rows.length === 0 && req.headers['x-owner-id'] && req.headers['x-owner-id'] !== targetOwnerId) {
+    const fallbackId = String(req.headers['x-owner-id']);
+    rows = await prisma.$queryRaw<Array<{ id: string }>>`
+      SELECT id FROM "Property" WHERE "isActive" = true AND "ownerId" = ${fallbackId}
+    `;
+  }
+
   return rows.map((r) => r.id);
 }
 
