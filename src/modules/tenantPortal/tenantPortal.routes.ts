@@ -21,6 +21,7 @@ async function getTenantFromUser(userId?: string) {
       ]
     },
     include: {
+      company: true,
       leases: {
         where: { isActive: true },
         include: {
@@ -191,36 +192,31 @@ router.get('/dashboard', async (req: Request, res: Response) => {
 router.get('/lease', async (req: Request, res: Response) => {
   try {
     const tenant = await getTenantFromUser(req.user?.userId);
-    const lease = tenant?.leases?.[0];
+    const lease = tenant?.leases?.find((l: any) => l.status === 'ACTIVE') || tenant?.leases?.[0];
+
+    const adminPhone = lease?.unit?.property?.company?.contactPhone || tenant?.company?.contactPhone || '+1 (514) 555-0199';
 
     if (!lease) {
       return res.json({
-        id: 'DEMO-LEASE',
-        unit: '101',
-        property: 'Le Mirage Condominiums & Suites',
-        address: '123 Main Street',
-        startDate: '2026-01-01',
-        endDate: '2027-12-31',
-        monthlyRent: 1250,
-        rent: 1250,
-        deposit: 1250,
-        status: 'ACTIVE',
-        adminPhone: '+1 (514) 555-0199'
+        hasLease: false,
+        id: null,
+        adminPhone
       });
     }
 
     return res.json({
+      hasLease: true,
       id: lease.id,
-      unit: lease.unit?.unitNumber || '101',
-      property: lease.unit?.property?.name || 'Le Mirage Condominiums & Suites',
-      address: lease.unit?.property?.address || '123 Main Street',
+      unit: lease.unit?.unitNumber || 'N/A',
+      property: lease.unit?.property?.name || 'Property',
+      address: lease.unit?.property?.address || 'Address on file',
       startDate: lease.startDate,
       endDate: lease.endDate,
       monthlyRent: Number(lease.rentAmount || 0),
       rent: Number(lease.rentAmount || 0),
       deposit: Number(lease.depositAmount || 0),
       status: lease.status || 'ACTIVE',
-      adminPhone: lease.unit?.property?.company?.contactPhone || '+1 (514) 555-0199'
+      adminPhone
     });
   } catch (err: any) {
     return res.status(500).json({ message: err.message });
