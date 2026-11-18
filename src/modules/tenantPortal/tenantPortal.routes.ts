@@ -133,7 +133,10 @@ router.get('/dashboard', async (req: Request, res: Response) => {
 
     const unreadMessagesCount = tenant
       ? await prisma.communicationMessage.count({
-          where: { recipientId: tenant.id },
+          where: {
+            recipientId: tenant.id,
+            subject: 'ADMIN_MSG:UNREAD',
+          },
         })
       : 0;
 
@@ -178,14 +181,21 @@ router.get('/dashboard', async (req: Request, res: Response) => {
         leaseStatus: activeLease?.status || 'None',
         leaseExpiry: activeLease?.endDate ? new Date(activeLease.endDate).toISOString() : null,
         openTickets: openTicketsCount,
-        recentTickets: recentTickets.map((t) => ({
-          id: t.id,
-          title: t.title,
-          subject: t.title,
-          status: t.status === 'RESOLVED' ? 'Resolved' : t.status === 'IN_PROGRESS' ? 'In Progress' : 'Pending',
-          priority: t.priority,
-          date: t.createdAt,
-        })),
+        recentTickets: recentTickets.map((t) => {
+          const displayId = `TCK-${t.id.slice(0, 6).toUpperCase()}`;
+          const normStatus = (t.status === 'RESOLVED' || t.status === 'CLOSED') ? 'Resolved' : (t.status === 'IN_PROGRESS' || t.status === 'PENDING_PARTS') ? 'In Progress' : 'Pending';
+          const normPriority = (t.priority === 'HIGH' || t.priority === 'EMERGENCY') ? 'High' : (t.priority === 'LOW' ? 'Low' : 'Medium');
+          return {
+            id: displayId,
+            dbId: t.id,
+            displayId,
+            title: t.title,
+            subject: t.title,
+            status: normStatus,
+            priority: normPriority,
+            date: t.createdAt ? new Date(t.createdAt).toISOString().split('T')[0] : '',
+          };
+        }),
         vehicleCount,
         unauthorizedVehicles: 0,
         nextDueDate,
