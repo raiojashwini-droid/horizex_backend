@@ -18,7 +18,6 @@ export class TalCasesService {
         events: {
           where: { isCompleted: false },
           orderBy: { eventDate: 'asc' },
-          take: 1,
         },
       },
       orderBy: { filingDate: 'desc' },
@@ -141,6 +140,13 @@ export class TalCasesService {
     });
 
     return event;
+  }
+
+  static async completeEvent(eventId: string) {
+    return prisma.caseEvent.update({
+      where: { id: eventId },
+      data: { isCompleted: true },
+    });
   }
 }
 

@@ -56,3 +56,12 @@ export const scheduleHearing = async (req: Request, res: Response, next: NextFun
   }
 };
 
+export const completeTask = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const event = await TalCasesService.completeEvent(req.params.id);
+    return sendSuccess(res, event, 200);
+  } catch (err) {
+    return next(err);
+  }
+};
+

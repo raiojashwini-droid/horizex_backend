@@ -4,6 +4,7 @@ import {
   getCase,
   createCase,
   scheduleHearing,
+  completeTask,
 } from './talCases.controller';
 import { validateRequest } from '../../middlewares/validate.middleware';
 import { createTalCaseSchema, scheduleHearingSchema } from './talCases.schema';
@@ -38,6 +39,12 @@ router.post(
   authorizeRoles('SUPER_ADMIN', 'COMPANY_ADMIN', 'PROPERTY_MANAGER'),
   validateRequest(scheduleHearingSchema),
   scheduleHearing
+);
+
+router.put(
+  '/tasks/:id',
+  authorizeRoles('SUPER_ADMIN', 'COMPANY_ADMIN', 'PROPERTY_MANAGER'),
+  completeTask
 );
 
 export default router;

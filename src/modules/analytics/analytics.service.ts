@@ -1,19 +1,30 @@
 import { prisma } from '../../config/db';
 
 export class AnalyticsService {
-  static async getDashboardStats(companyId?: string | null) {
+  static async getDashboardStats(companyId?: string | null, propertyId?: string | null) {
     const propertyWhere: any = { isActive: true };
     const unitWhere: any = { isActive: true };
     const ticketWhere: any = { status: { notIn: ['CLOSED', 'RESOLVED'] } };
     const leaseWhere: any = { status: 'ACTIVE', isActive: true };
     const invoiceWhere: any = {};
+    const paymentWhere: any = { status: 'COMPLETED' };
 
-    if (companyId) {
+    if (companyId && companyId !== 'all') {
       propertyWhere.companyId = companyId;
       unitWhere.property = { companyId };
       ticketWhere.property = { companyId };
       leaseWhere.unit = { property: { companyId } };
       invoiceWhere.tenant = { companyId };
+      paymentWhere.tenant = { companyId };
+    }
+
+    if (propertyId && propertyId !== 'all') {
+      propertyWhere.id = propertyId;
+      unitWhere.propertyId = propertyId;
+      ticketWhere.propertyId = propertyId;
+      leaseWhere.unit = { propertyId };
+      invoiceWhere.lease = { unit: { propertyId } };
+      paymentWhere.invoice = { lease: { unit: { propertyId } } };
     }
 
     const [totalProperties, totalUnits, occupiedUnits, vacantUnits, turnoverUnits, openTickets, emergencyTickets] =
@@ -49,7 +60,7 @@ export class AnalyticsService {
     const in60Days = new Date();
     in60Days.setDate(now.getDate() + 60);
 
-    const [expiring30Days, expiring60Days] = await Promise.all([
+    const [expiring30Days, expiring60Days, recentPayments, recentLeases, recentTickets] = await Promise.all([
       prisma.lease.count({
         where: {
           ...leaseWhere,
@@ -62,7 +73,59 @@ export class AnalyticsService {
           endDate: { gte: now, lte: in60Days },
         },
       }),
+      prisma.payment.findMany({
+        where: paymentWhere,
+        include: {
+          tenant: { select: { firstName: true, lastName: true } },
+          invoice: {
+            include: {
+              lease: {
+                include: {
+                  unit: {
+                    include: { property: { select: { name: true } } },
+                  },
+                },
+              },
+            },
+          },
+        },
+        orderBy: { paidAt: 'desc' },
+        take: 5,
+      }),
+      prisma.lease.findMany({
+        where: leaseWhere,
+        include: {
+          tenant: { select: { firstName: true, lastName: true } },
+          unit: { include: { property: { select: { name: true } } } },
+        },
+        orderBy: { createdAt: 'desc' },
+        take: 5,
+      }),
+      prisma.maintenanceTicket.findMany({
+        where: ticketWhere,
+        include: {
+          property: { select: { name: true } },
+        },
+        orderBy: { createdAt: 'desc' },
+        take: 5,
+      }),
     ]);
+
+    const recentActivity: string[] = [];
+    recentPayments.forEach((p) => {
+      const propName = p.invoice?.lease?.unit?.property?.name || 'Property';
+      const tenantName = p.tenant ? `${p.tenant.firstName} ${p.tenant.lastName}`.trim() : 'Tenant';
+      recentActivity.push(`Payment of $${(Number(p.amount) || 0).toLocaleString('en-CA')} received from ${tenantName} for ${propName}`);
+    });
+    recentLeases.forEach((l) => {
+      const propName = l.unit?.property?.name || 'Property';
+      const tenantName = l.tenant ? `${l.tenant.firstName} ${l.tenant.lastName}`.trim() : 'Tenant';
+      recentActivity.push(`Lease agreement active for ${tenantName} at ${propName}`);
+    });
+    recentTickets.forEach((t) => {
+      const propName = t.property?.name || 'Property';
+      recentActivity.push(`Maintenance ticket: ${t.title || 'Service request'} created for ${propName}`);
+    });
 
     const occupancyRate = totalUnits > 0 ? (occupiedUnits / totalUnits) * 100 : 0;
     const vacancyRate = totalUnits > 0 ? (vacantUnits / totalUnits) * 100 : 0;
@@ -91,13 +154,23 @@ export class AnalyticsService {
         openTickets,
         emergencyTickets,
       },
+      recentActivity: recentActivity.slice(0, 8),
     };
   }
 
-  static async getRevenueTrajectory(companyId?: string | null) {
+  static async getRevenueTrajectory(companyId?: string | null, propertyId?: string | null) {
     const where: any = {};
-    if (companyId) {
+    if (companyId && companyId !== 'all') {
       where.tenant = { companyId };
+    }
+    if (propertyId && propertyId !== 'all') {
+      where.invoice = {
+        lease: {
+          unit: {
+            propertyId,
+          },
+        },
+      };
     }
 
     // Fetch payments in last 6 months
@@ -111,17 +184,31 @@ export class AnalyticsService {
         paidAt: { gte: sixMonthsAgo },
         status: 'COMPLETED',
       },
-      select: { amount: true, paidAt: true },
+      include: {
+        invoice: {
+          include: {
+            lease: {
+              include: {
+                unit: {
+                  select: { propertyId: true },
+                },
+              },
+            },
+          },
+        },
+      },
     });
 
     const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
     const monthlyRevenueMap: Record<string, number> = {};
+    const monthsList: string[] = [];
 
     for (let i = 0; i < 6; i++) {
       const d = new Date();
       d.setMonth(d.getMonth() - (5 - i));
       const key = `${months[d.getMonth()]} ${d.getFullYear()}`;
       monthlyRevenueMap[key] = 0;
+      monthsList.push(key);
     }
 
     for (const p of payments) {
@@ -142,28 +229,70 @@ export class AnalyticsService {
     }));
 
     const propWhere: any = { isActive: true };
-    if (companyId) propWhere.companyId = companyId;
+    if (companyId && companyId !== 'all') propWhere.companyId = companyId;
+    if (propertyId && propertyId !== 'all') propWhere.id = propertyId;
     const properties = await prisma.property.findMany({
       where: propWhere,
       select: { id: true, name: true },
     });
 
-    const revenueByProperty = properties.map((p) => ({
-      id: p.id,
-      name: p.name,
-      amount: 0,
-      rent: 0,
-      deposit: 0,
-      serviceFees: 0,
-      monthly: monthlyRevenue.map((m) => ({ ...m, amount: 0, rent: 0, deposit: 0, serviceFees: 0 })),
-    }));
+    // Real property revenue aggregation
+    const revenueByProperty = properties.map((prop) => {
+      let propTotal = 0;
+      const propMonthlyMap: Record<string, number> = {};
+      monthsList.forEach((m) => {
+        propMonthlyMap[m] = 0;
+      });
+
+      payments.forEach((p) => {
+        const pPropId = p.invoice?.lease?.unit?.propertyId;
+        if (pPropId === prop.id) {
+          const amt = Number(p.amount) || 0;
+          propTotal += amt;
+          const pDate = new Date(p.paidAt);
+          const mKey = `${months[pDate.getMonth()]} ${pDate.getFullYear()}`;
+          if (propMonthlyMap[mKey] !== undefined) {
+            propMonthlyMap[mKey] += amt;
+          }
+        }
+      });
+
+      return {
+        id: prop.id,
+        name: prop.name,
+        amount: Math.round(propTotal * 100) / 100,
+        rent: Math.round(propTotal * 100) / 100,
+        deposit: 0,
+        serviceFees: 0,
+        monthly: Object.entries(propMonthlyMap).map(([month, val]) => ({
+          month,
+          amount: Math.round(val * 100) / 100,
+          rent: Math.round(val * 100) / 100,
+          deposit: 0,
+          serviceFees: 0,
+        })),
+      };
+    });
+
+    // Calculate real security deposits from active leases
+    const leaseWhere: any = { status: 'ACTIVE', isActive: true };
+    if (companyId && companyId !== 'all') leaseWhere.unit = { property: { companyId } };
+    if (propertyId && propertyId !== 'all') {
+      leaseWhere.unit = { ...(leaseWhere.unit || {}), propertyId };
+    }
+
+    const activeLeases = await prisma.lease.findMany({
+      where: leaseWhere,
+      select: { depositAmount: true },
+    });
+    const totalDeposit = activeLeases.reduce((acc, l) => acc + (Number(l.depositAmount) || 0), 0);
 
     const totalRevenue = monthlyRevenue.reduce((acc, curr) => acc + curr.revenue, 0);
 
     return {
       actualRevenue: totalRevenue,
       actualRent: totalRevenue,
-      actualDeposit: 0,
+      actualDeposit: totalDeposit,
       actualServiceFees: 0,
       projectedRevenue: totalRevenue,
       totalRevenue,
