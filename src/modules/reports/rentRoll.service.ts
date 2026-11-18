@@ -197,8 +197,8 @@ export class RentRollService {
         if (rentalMode === 'BEDROOM_WISE') {
           // Bedroom-Wise unit handling
           const bedCount = unit.bedrooms || 2;
-          const perBedRent = (unit.unitType?.singleBedroomRate && Number(unit.unitType.singleBedroomRate) > 0)
-            ? Number(unit.unitType.singleBedroomRate)
+          const perBedRent = ((unit.unitType as any)?.singleBedroomRate && Number((unit.unitType as any).singleBedroomRate) > 0)
+            ? Number((unit.unitType as any).singleBedroomRate)
             : Math.round(potentialRent / bedCount);
 
           // Get raw bedroom details/identifiers

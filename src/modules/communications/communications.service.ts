@@ -425,7 +425,75 @@ export class CommunicationsService {
     userRole?: string,
     buildingId?: string | null
   ) {
-    // If caller is an OWNER, show Admins / Property Managers to chat with
+    // If caller is an OWNER or TENANT, show Admins / Property Managers to chat with
+    if (userRole === 'TENANT') {
+      let tenantCompanyId = companyId;
+      if (userId) {
+        const callerUser = await prisma.user.findUnique({
+          where: { id: userId },
+          select: { email: true, companyId: true },
+        });
+        if (callerUser) {
+          tenantCompanyId = callerUser.companyId || tenantCompanyId;
+        }
+      }
+
+      const admins: any[] = await prisma.user.findMany({
+        where: {
+          role: { in: ['PROPERTY_MANAGER', 'COMPANY_ADMIN', 'ADMIN', 'SUPER_ADMIN'] },
+          isActive: true,
+          ...(tenantCompanyId ? {
+            OR: [
+              { companyId: tenantCompanyId },
+              { companyId: null },
+            ],
+          } : {}),
+        },
+        select: {
+          id: true,
+          firstName: true,
+          lastName: true,
+          email: true,
+          phone: true,
+          role: true,
+        },
+        orderBy: [
+          { role: 'asc' },
+          { firstName: 'asc' },
+        ],
+        take: 5,
+      });
+
+      if (!admins || admins.length === 0) {
+        return [{
+          id: 'support_admin',
+          name: 'Horizex Property Support',
+          firstName: 'Property Support',
+          email: 'support@horizex.com',
+          phone: '',
+          role: 'PROPERTY_MANAGER',
+          unreadCount: 0,
+          lastMessage: null,
+          totalMessages: 0,
+        }];
+      }
+
+      return admins.map((a) => {
+        const fullName = `${a.firstName || ''} ${a.lastName || ''}`.trim();
+        return {
+          id: a.id,
+          name: fullName ? `${fullName} (Property Support)` : 'Horizex Property Support',
+          firstName: fullName || 'Property Support',
+          email: a.email,
+          phone: a.phone || '',
+          role: a.role,
+          unreadCount: 0,
+          lastMessage: null,
+          totalMessages: 0,
+        };
+      });
+    }
+
     if (userRole === 'OWNER') {
       const admins: any[] = await prisma.$queryRaw`
         SELECT id, "firstName", "lastName", email, phone, role::text as role
@@ -539,6 +607,10 @@ export class CommunicationsService {
         const latest = tMsgs[0] || null;
         const name = `${t.firstName || ''} ${t.lastName || ''}`.trim() || (isResident ? 'Resident' : 'Tenant');
 
+        const unreadCount = tMsgs.filter(m =>
+          m.subject?.includes('UNREAD') && m.senderId !== userId
+        ).length;
+
         conversationsMap.set(t.id, {
           id: t.id,
           name,
@@ -549,7 +621,7 @@ export class CommunicationsService {
           propertyId,
           propertyName,
           unitNumber,
-          unreadCount: 0,
+          unreadCount,
           lastMessage: latest
             ? {
                 content: latest.message,
@@ -692,6 +764,70 @@ export class CommunicationsService {
   static async getHistory(targetId: string, currentUserId?: string, userRole?: string) {
     const cleanId = (targetId || '').replace(/^resident_/, '');
     const isCallerOwner = userRole === 'OWNER';
+    const isCallerTenant = userRole === 'TENANT';
+
+    // 0. If caller is a Tenant (viewing support chat)
+    if (isCallerTenant) {
+      let tenantRecord: any = null;
+      if (currentUserId) {
+        const callerUser = await prisma.user.findUnique({
+          where: { id: currentUserId },
+          select: { email: true, id: true },
+        });
+        if (callerUser) {
+          tenantRecord = await prisma.tenant.findFirst({
+            where: {
+              OR: [
+                { id: callerUser.id },
+                { email: { equals: callerUser.email, mode: 'insensitive' } },
+              ],
+            },
+          });
+        }
+        if (!tenantRecord) {
+          tenantRecord = await prisma.tenant.findUnique({ where: { id: currentUserId } });
+        }
+      }
+
+      if (tenantRecord) {
+        const messages = await prisma.communicationMessage.findMany({
+          where: {
+            recipientId: tenantRecord.id,
+          },
+          orderBy: { sentAt: 'asc' },
+        });
+
+        // Mark admin unread messages as read
+        await prisma.communicationMessage.updateMany({
+          where: {
+            recipientId: tenantRecord.id,
+            subject: 'ADMIN_MSG:UNREAD',
+          },
+          data: {
+            subject: 'ADMIN_MSG:READ',
+          },
+        });
+
+        return messages.map((m) => {
+          const isFromTenant = m.senderId === currentUserId || m.subject?.startsWith('TENANT_');
+          return {
+            id: m.id,
+            senderId: isFromTenant ? currentUserId : (m.senderId || targetId),
+            receiverId: isFromTenant ? targetId : currentUserId,
+            content: m.message,
+            message: m.message,
+            createdAt: new Date(m.sentAt).toISOString(),
+            sentAt: new Date(m.sentAt).toISOString(),
+            direction: isFromTenant ? 'OUTBOUND' : 'INBOUND',
+            smsStatus: 'delivered',
+            isRead: m.subject !== 'ADMIN_MSG:UNREAD',
+            isReadByAdmin: true,
+          };
+        });
+      }
+
+      return [];
+    }
 
     // 1. Check if target is a User (Owner or Coworker)
     let targetUser: any = null;
@@ -761,7 +897,7 @@ export class CommunicationsService {
       }));
     }
 
-    // 2. Default: Tenant messages
+    // 2. Default: Tenant messages (cleanId is Tenant ID)
     const messages = await prisma.communicationMessage.findMany({
       where: {
         recipientId: cleanId,
@@ -769,16 +905,32 @@ export class CommunicationsService {
       orderBy: { sentAt: 'asc' },
     });
 
-    return messages.map((m) => ({
-      id: m.id,
-      content: m.message,
-      message: m.message,
-      createdAt: new Date(m.sentAt).toISOString(),
-      sentAt: new Date(m.sentAt).toISOString(),
-      direction: m.senderId === currentUserId || !m.senderId ? 'OUTBOUND' : 'INBOUND',
-      smsStatus: 'delivered',
-      isReadByAdmin: true,
-    }));
+    // Mark tenant's unread messages as read by admin
+    await prisma.communicationMessage.updateMany({
+      where: {
+        recipientId: cleanId,
+        subject: { in: ['TENANT_INBOUND:UNREAD', 'TENANT_MSG:UNREAD'] },
+      },
+      data: {
+        subject: 'TENANT_INBOUND:READ',
+      },
+    });
+
+    return messages.map((m) => {
+      const isFromAdmin = m.senderId === currentUserId || (!m.subject?.startsWith('TENANT_') && m.senderId !== cleanId);
+      return {
+        id: m.id,
+        senderId: isFromAdmin ? currentUserId : cleanId,
+        receiverId: isFromAdmin ? cleanId : currentUserId,
+        content: m.message,
+        message: m.message,
+        createdAt: new Date(m.sentAt).toISOString(),
+        sentAt: new Date(m.sentAt).toISOString(),
+        direction: isFromAdmin ? 'OUTBOUND' : 'INBOUND',
+        smsStatus: 'delivered',
+        isReadByAdmin: true,
+      };
+    });
   }
 
   static async sendMessage(
@@ -804,6 +956,62 @@ export class CommunicationsService {
 
     const targetId = String(rawTarget).replace(/^resident_/, '');
     const authorId = senderUserId || '13445edb-cdc2-475b-81c8-d8750e17ffa9';
+
+    // 0. Check if sender is a Tenant (sending message to Admin/Property Support)
+    let senderTenant: any = null;
+    if (senderUserId) {
+      const senderUser = await prisma.user.findUnique({
+        where: { id: senderUserId },
+        select: { email: true, role: true },
+      });
+      if (senderUser && senderUser.role === 'TENANT') {
+        senderTenant = await prisma.tenant.findFirst({
+          where: {
+            OR: [
+              { id: senderUserId },
+              { email: { equals: senderUser.email, mode: 'insensitive' } },
+            ],
+          },
+        });
+      }
+      if (!senderTenant) {
+        senderTenant = await prisma.tenant.findUnique({ where: { id: senderUserId } });
+      }
+    }
+
+    if (senderTenant) {
+      // The message is from a Tenant!
+      const comm = await prisma.communicationMessage.create({
+        data: {
+          senderId: authorId,
+          recipientId: senderTenant.id,
+          channel: 'SMS',
+          subject: 'TENANT_INBOUND:UNREAD',
+          message: bodyText,
+        },
+      });
+
+      await createAuditLog({
+        userId: senderUserId,
+        action: 'SEND_COMMUNICATION',
+        entityType: 'CommunicationMessage',
+        entityId: comm.id,
+        newData: comm,
+      });
+
+      return {
+        id: comm.id,
+        senderId: authorId,
+        recipientId: targetId,
+        receiverId: targetId,
+        content: comm.message,
+        message: comm.message,
+        createdAt: new Date(comm.sentAt).toISOString(),
+        sentAt: new Date(comm.sentAt).toISOString(),
+        direction: 'OUTBOUND',
+        smsStatus: 'delivered',
+      };
+    }
 
     // 1. Check if recipient is a User (Owner or Team Member)
     let targetUser: any = null;
@@ -844,13 +1052,13 @@ export class CommunicationsService {
       };
     }
 
-    // 2. Otherwise send as CommunicationMessage to Tenant
+    // 2. Otherwise send as CommunicationMessage to Tenant (targetId is Tenant ID)
     const comm = await prisma.communicationMessage.create({
       data: {
         senderId: authorId,
         recipientId: targetId,
         channel: data.channel || 'SMS',
-        subject: data.subject || 'SMS Communication',
+        subject: 'ADMIN_MSG:UNREAD',
         message: bodyText,
       },
     });
@@ -877,7 +1085,19 @@ export class CommunicationsService {
     };
   }
 
-  static async markAsRead(senderId?: string | number) {
+  static async markAsRead(targetId?: string | number) {
+    if (targetId) {
+      const cleanId = String(targetId).replace(/^resident_/, '');
+      await prisma.communicationMessage.updateMany({
+        where: {
+          recipientId: cleanId,
+          subject: { in: ['TENANT_INBOUND:UNREAD', 'TENANT_MSG:UNREAD'] },
+        },
+        data: {
+          subject: 'TENANT_INBOUND:READ',
+        },
+      });
+    }
     return { success: true };
   }
 }

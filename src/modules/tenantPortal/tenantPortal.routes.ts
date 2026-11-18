@@ -939,8 +939,8 @@ router.post('/insurance', async (req: Request, res: Response) => {
       }
     }
 
-    const propertyId = activeLease?.unit?.propertyId || tenant.propertyId || null;
-    const unitId = activeLease?.unitId || tenant.unitId || null;
+    const propertyId = activeLease?.unit?.propertyId || (tenant as any).propertyId || null;
+    const unitId = activeLease?.unitId || (tenant as any).unitId || null;
     const companyId = tenant.companyId || activeLease?.unit?.property?.companyId || null;
 
     const entityLinks: any[] = [
@@ -1096,6 +1096,160 @@ router.get('/reports', async (req: Request, res: Response) => {
         dataLatency: 'Real-time'
       }
     });
+  } catch (err: any) {
+    return res.status(500).json({ message: err.message });
+  }
+});
+
+// 11. Support Chat / Messages
+router.get('/messages', async (req: Request, res: Response) => {
+  try {
+    let tenant: any = await getTenantFromUser(req.user?.userId);
+    const userId = req.user?.userId;
+
+    // Fallback: If user is an Admin/PM testing the portal, find first active tenant
+    if (!tenant) {
+      tenant = await prisma.tenant.findFirst({
+        where: { isActive: true },
+        include: { company: true, leases: { where: { isActive: true } } },
+      });
+    }
+
+    // Resolve support contact
+    let supportAdmin = await prisma.user.findFirst({
+      where: {
+        role: { in: ['PROPERTY_MANAGER', 'COMPANY_ADMIN', 'ADMIN', 'SUPER_ADMIN'] },
+        isActive: true,
+        ...(tenant?.companyId ? {
+          OR: [
+            { companyId: tenant.companyId },
+            { companyId: null }
+          ]
+        } : {})
+      },
+      select: { id: true, firstName: true, lastName: true, email: true, phone: true, role: true },
+      orderBy: [{ role: 'asc' }, { firstName: 'asc' }]
+    });
+
+    const contactName = supportAdmin ? `${supportAdmin.firstName || ''} ${supportAdmin.lastName || ''}`.trim() : 'Property Support';
+    const supportContact = {
+      id: supportAdmin?.id || 'support_admin',
+      name: contactName ? `${contactName} (Property Support)` : 'Horizex Property Support',
+      role: 'Property Management',
+      email: supportAdmin?.email || 'support@horizex.com',
+      phone: supportAdmin?.phone || '+1 (514) 555-0199',
+    };
+
+    if (!tenant) {
+      return res.json({
+        supportContact,
+        messages: [],
+      });
+    }
+
+    const messages = await prisma.communicationMessage.findMany({
+      where: { recipientId: tenant.id },
+      orderBy: { sentAt: 'asc' }
+    });
+
+    // Mark admin messages as read
+    await prisma.communicationMessage.updateMany({
+      where: {
+        recipientId: tenant.id,
+        subject: 'ADMIN_MSG:UNREAD',
+      },
+      data: {
+        subject: 'ADMIN_MSG:READ',
+      }
+    });
+
+    const formattedMessages = messages.map(m => {
+      const isMe = m.senderId === userId || m.subject?.startsWith('TENANT_');
+      return {
+        id: m.id,
+        senderId: isMe ? (userId || 'me') : (m.senderId || supportContact.id),
+        receiverId: isMe ? supportContact.id : (userId || 'me'),
+        content: m.message,
+        message: m.message,
+        createdAt: new Date(m.sentAt).toISOString(),
+        direction: isMe ? 'OUTBOUND' : 'INBOUND',
+        isMe,
+      };
+    });
+
+    return res.json({
+      supportContact,
+      messages: formattedMessages,
+    });
+  } catch (err: any) {
+    return res.status(500).json({ message: err.message });
+  }
+});
+
+router.post('/messages', async (req: Request, res: Response) => {
+  try {
+    let tenant: any = await getTenantFromUser(req.user?.userId);
+    const userId = req.user?.userId;
+    const { content, message } = req.body;
+    const bodyText = (content || message || '').trim();
+
+    if (!bodyText) {
+      return res.status(400).json({ message: 'Message content cannot be empty' });
+    }
+
+    if (!tenant) {
+      tenant = await prisma.tenant.findFirst({
+        where: { isActive: true },
+      });
+    }
+
+    if (!tenant) {
+      return res.status(404).json({ message: 'Tenant record not found' });
+    }
+
+    const comm = await prisma.communicationMessage.create({
+      data: {
+        senderId: userId,
+        recipientId: tenant.id,
+        channel: 'SMS',
+        subject: 'TENANT_INBOUND:UNREAD',
+        message: bodyText,
+      }
+    });
+
+    return res.status(201).json({
+      id: comm.id,
+      senderId: userId || 'me',
+      recipientId: tenant.id,
+      content: comm.message,
+      message: comm.message,
+      createdAt: new Date(comm.sentAt).toISOString(),
+      direction: 'OUTBOUND',
+      isMe: true,
+    });
+  } catch (err: any) {
+    return res.status(500).json({ message: err.message });
+  }
+});
+
+router.post('/messages/read', async (req: Request, res: Response) => {
+  try {
+    let tenant: any = await getTenantFromUser(req.user?.userId);
+    if (!tenant) {
+      tenant = await prisma.tenant.findFirst({ where: { isActive: true } });
+    }
+    if (tenant) {
+      await prisma.communicationMessage.updateMany({
+        where: {
+          recipientId: tenant.id,
+          subject: 'ADMIN_MSG:UNREAD',
+        },
+        data: {
+          subject: 'ADMIN_MSG:READ',
+        }
+      });
+    }
+    return res.json({ success: true });
   } catch (err: any) {
     return res.status(500).json({ message: err.message });
   }
