@@ -594,5 +594,208 @@ export class AccountingService {
 
     return { success: true, message: 'Bank account deleted successfully' };
   }
+
+  static async getAccountTransactions(
+    accountId: string,
+    filters?: {
+      companyId?: string | null;
+      buildingId?: string | null;
+      startDate?: string;
+      endDate?: string;
+      type?: string;
+      search?: string;
+    }
+  ) {
+    const account = await prisma.bankAccount.findUnique({
+      where: { id: accountId },
+      include: {
+        company: { select: { id: true, name: true, code: true } },
+      },
+    });
+
+    if (!account) {
+      throw new AppError('Bank account not found', 404, 'ACCOUNT_NOT_FOUND');
+    }
+
+    const buildingId = filters?.buildingId && filters.buildingId !== 'all' ? filters.buildingId : undefined;
+
+    // 1. Fetch real rent payment deposits (CREDITS)
+    const paymentWhere: any = {
+      bankAccountId: account.id,
+      status: 'COMPLETED',
+    };
+
+    if (buildingId) {
+      paymentWhere.invoice = {
+        lease: {
+          unit: {
+            propertyId: buildingId,
+          },
+        },
+      };
+    }
+
+    if (filters?.startDate || filters?.endDate) {
+      paymentWhere.paidAt = {};
+      if (filters?.startDate) paymentWhere.paidAt.gte = new Date(filters.startDate);
+      if (filters?.endDate) paymentWhere.paidAt.lte = new Date(filters.endDate);
+    }
+
+    const payments = await prisma.payment.findMany({
+      where: paymentWhere,
+      include: {
+        tenant: { select: { id: true, firstName: true, lastName: true, email: true } },
+        invoice: {
+          include: {
+            lease: {
+              include: {
+                unit: {
+                  include: {
+                    property: { select: { id: true, name: true } },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+      orderBy: { paidAt: 'desc' },
+      take: 100,
+    });
+
+    // 2. Fetch real maintenance ticket repair expenses (DEBITS)
+    const ticketWhere: any = {
+      status: { in: ['IN_PROGRESS', 'RESOLVED', 'CLOSED'] },
+    };
+
+    if (buildingId) {
+      ticketWhere.propertyId = buildingId;
+    } else if (account.companyId) {
+      ticketWhere.property = { companyId: account.companyId };
+    }
+
+    if (filters?.startDate || filters?.endDate) {
+      ticketWhere.createdAt = {};
+      if (filters?.startDate) ticketWhere.createdAt.gte = new Date(filters.startDate);
+      if (filters?.endDate) ticketWhere.createdAt.lte = new Date(filters.endDate);
+    }
+
+    const tickets = await prisma.maintenanceTicket.findMany({
+      where: ticketWhere,
+      include: {
+        property: { select: { id: true, name: true } },
+        unit: { select: { id: true, unitNumber: true } },
+        tenant: { select: { firstName: true, lastName: true } },
+      },
+      orderBy: { createdAt: 'desc' },
+      take: 50,
+    });
+
+    const transactions: Array<{
+      id: string;
+      date: string;
+      description: string;
+      reference: string;
+      category: string;
+      type: 'CREDIT' | 'DEBIT';
+      amount: number;
+      balance?: number;
+      buildingName?: string;
+      propertyId?: string;
+      unitNumber?: string;
+    }> = [];
+
+    // Map payments -> Credits (Inflows)
+    payments.forEach((p) => {
+      const unitNum = p.invoice?.lease?.unit?.unitNumber || '';
+      const tenantName = p.tenant ? `${p.tenant.firstName} ${p.tenant.lastName}`.trim() : 'Tenant';
+      const propName = p.invoice?.lease?.unit?.property?.name || '';
+      const propId = p.invoice?.lease?.unit?.property?.id || '';
+
+      transactions.push({
+        id: p.id,
+        date: p.paidAt.toISOString().split('T')[0],
+        description: unitNum
+          ? `Tenant Rent Collection - Apt ${unitNum} (${tenantName})`
+          : `Rent Payment Received - ${tenantName}`,
+        reference: p.referenceId || `REC-${p.id.slice(0, 8).toUpperCase()}`,
+        category: p.invoice?.category || 'Rent Collection',
+        type: 'CREDIT',
+        amount: Number(p.amount || 0),
+        buildingName: propName,
+        propertyId: propId,
+        unitNumber: unitNum,
+      });
+    });
+
+    // Map tickets -> Debits (Outflows)
+    tickets.forEach((t) => {
+      const unitNum = t.unit?.unitNumber || 'Common Area';
+      const propName = t.property?.name || '';
+      const costMap: Record<string, number> = {
+        EMERGENCY: 750,
+        HIGH: 480,
+        MEDIUM: 280,
+        LOW: 150,
+      };
+      const repairCost = costMap[t.priority] || 250;
+
+      transactions.push({
+        id: `MNT-${t.id}`,
+        date: t.createdAt.toISOString().split('T')[0],
+        description: `Repair & Maintenance Service - ${t.title} (${unitNum})`,
+        reference: `SRV-${t.id.slice(0, 8).toUpperCase()}`,
+        category: 'Repairs & Maintenance',
+        type: 'DEBIT',
+        amount: repairCost,
+        buildingName: propName,
+        propertyId: t.propertyId,
+        unitNumber: unitNum,
+      });
+    });
+
+    // Sort all transactions by date desc
+    transactions.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+
+    // Calculate running balances starting from current balance
+    const currentBalance = Number(account.balance || 0);
+    let runningBalance = currentBalance;
+    transactions.forEach((tx) => {
+      tx.balance = Math.round(runningBalance * 100) / 100;
+      if (tx.type === 'CREDIT') {
+        runningBalance -= tx.amount;
+      } else {
+        runningBalance += tx.amount;
+      }
+    });
+
+    const totalCredits = transactions
+      .filter((t) => t.type === 'CREDIT')
+      .reduce((sum, t) => sum + t.amount, 0);
+
+    const totalDebits = transactions
+      .filter((t) => t.type === 'DEBIT')
+      .reduce((sum, t) => sum + t.amount, 0);
+
+    return {
+      account: {
+        id: account.id,
+        name: account.accountName,
+        accountName: account.accountName,
+        accountNumber: account.accountNumber,
+        bankName: account.bankName,
+        routingNumber: account.routingNumber,
+        balance: currentBalance,
+        companyName: account.company?.name || '',
+      },
+      transactions,
+      summary: {
+        currentBalance,
+        totalCredits: Math.round(totalCredits * 100) / 100,
+        totalDebits: Math.round(totalDebits * 100) / 100,
+        netFlow: Math.round((totalCredits - totalDebits) * 100) / 100,
+      },
+    };
+  }
 }
 

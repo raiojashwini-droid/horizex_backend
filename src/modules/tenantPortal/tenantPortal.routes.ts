@@ -16,11 +16,12 @@ async function getTenantFromUser(userId?: string) {
   return prisma.tenant.findFirst({
     where: {
       OR: [
-        { email: user.email },
+        { email: { equals: user.email, mode: 'insensitive' } },
         { id: user.id }
       ]
     },
     include: {
+      company: true,
       leases: {
         where: { isActive: true },
         include: {
@@ -69,62 +70,118 @@ router.get('/profile', async (req: Request, res: Response) => {
 router.get('/dashboard', async (req: Request, res: Response) => {
   try {
     const tenant = await getTenantFromUser(req.user?.userId);
-    const activeLease = tenant?.leases?.[0];
+    const tenantUser = req.user?.userId
+      ? await prisma.user.findUnique({
+          where: { id: req.user.userId },
+          select: { firstName: true, lastName: true, email: true },
+        })
+      : null;
 
-    const invoices = tenant ? await prisma.invoice.findMany({
-      where: { tenantId: tenant.id },
-      orderBy: { dueDate: 'desc' }
-    }) : [];
+    const tenantName = tenant
+      ? `${tenant.firstName} ${tenant.lastName}`.trim()
+      : (tenantUser ? `${tenantUser.firstName} ${tenantUser.lastName}`.trim() : 'Tenant');
 
-    const openInvoices = invoices.filter(inv => inv.status !== 'PAID');
-    const latestInvoice = invoices[0];
+    const activeLease = tenant?.leases?.find((l: any) => l.status === 'ACTIVE') || tenant?.leases?.[0];
 
-    const openTicketsCount = tenant ? await prisma.maintenanceTicket.count({
-      where: {
-        tenantId: tenant.id,
-        status: { notIn: ['CLOSED', 'RESOLVED'] }
+    const invoices = tenant
+      ? await prisma.invoice.findMany({
+          where: { tenantId: tenant.id },
+          orderBy: { dueDate: 'desc' },
+        })
+      : [];
+
+    const openInvoices = invoices.filter((inv) => inv.status !== 'PAID');
+
+    const openTicketsCount = tenant
+      ? await prisma.maintenanceTicket.count({
+          where: {
+            tenantId: tenant.id,
+            status: { notIn: ['CLOSED', 'RESOLVED'] },
+          },
+        })
+      : 0;
+
+    const recentTickets = tenant
+      ? await prisma.maintenanceTicket.findMany({
+          where: { tenantId: tenant.id },
+          orderBy: { createdAt: 'desc' },
+          take: 3,
+          select: {
+            id: true,
+            title: true,
+            status: true,
+            priority: true,
+            createdAt: true,
+          },
+        })
+      : [];
+
+    const vehicleCount = tenant
+      ? await prisma.vehicle.count({
+          where: { tenantId: tenant.id },
+        })
+      : 0;
+
+    const unreadMessagesCount = tenant
+      ? await prisma.communicationMessage.count({
+          where: { recipientId: tenant.id },
+        })
+      : 0;
+
+    // Dynamic calculations based strictly on real database records
+    let currentRent = 0;
+    let rentDueStatus = 'None';
+    let nextDueDate: string | null = null;
+
+    if (activeLease) {
+      currentRent = Number(activeLease.rentAmount || 0);
+      if (openInvoices.length > 0) {
+        const hasOverdue = openInvoices.some((inv) => new Date(inv.dueDate) < new Date());
+        rentDueStatus = hasOverdue ? 'Overdue' : 'Due Soon';
+        nextDueDate = openInvoices[0].dueDate ? new Date(openInvoices[0].dueDate).toISOString() : null;
+      } else {
+        rentDueStatus = 'Paid';
+        // Next upcoming cycle (e.g., 1st of upcoming month) if lease is ongoing
+        const now = new Date();
+        const nextMonth = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+        if (new Date(activeLease.endDate) >= nextMonth) {
+          nextDueDate = nextMonth.toISOString();
+        } else {
+          nextDueDate = null;
+        }
       }
-    }) : 0;
-
-    const recentTickets = tenant ? await prisma.maintenanceTicket.findMany({
-      where: { tenantId: tenant.id },
-      orderBy: { createdAt: 'desc' },
-      take: 3,
-      select: {
-        id: true,
-        title: true,
-        status: true,
-        priority: true,
-        createdAt: true
-      }
-    }) : [];
-
-    const vehicleCount = tenant ? await prisma.vehicle.count({
-      where: { tenantId: tenant.id }
-    }) : 0;
-
-    const rentAmount = activeLease ? Number(activeLease.rentAmount) : (invoices[0] ? Number(invoices[0].amountDue) : 1250);
+    } else if (openInvoices.length > 0) {
+      currentRent = openInvoices.reduce((sum, inv) => sum + Number(inv.amountDue || 0), 0);
+      const hasOverdue = openInvoices.some((inv) => new Date(inv.dueDate) < new Date());
+      rentDueStatus = hasOverdue ? 'Overdue' : 'Due Soon';
+      nextDueDate = openInvoices[0].dueDate ? new Date(openInvoices[0].dueDate).toISOString() : null;
+    } else {
+      currentRent = 0;
+      rentDueStatus = 'None';
+      nextDueDate = null;
+    }
 
     return res.json({
-      tenantName: tenant ? `${tenant.firstName} ${tenant.lastName}`.trim() : 'Tenant User',
+      tenantName,
       stats: {
-        currentRent: rentAmount,
-        rentDueStatus: openInvoices.length === 0 ? 'Paid' : (new Date(openInvoices[0].dueDate) < new Date() ? 'Overdue' : 'Due Soon'),
-        leaseStatus: activeLease?.status || 'ACTIVE',
-        leaseExpiry: activeLease?.endDate || '2027-12-31',
+        currentRent,
+        rentDueStatus,
+        leaseStatus: activeLease?.status || 'None',
+        leaseExpiry: activeLease?.endDate ? new Date(activeLease.endDate).toISOString() : null,
         openTickets: openTicketsCount,
-        recentTickets: recentTickets.map(t => ({
+        recentTickets: recentTickets.map((t) => ({
           id: t.id,
+          title: t.title,
           subject: t.title,
-          status: t.status === 'RESOLVED' ? 'Resolved' : (t.status === 'IN_PROGRESS' ? 'In Progress' : 'Pending'),
+          status: t.status === 'RESOLVED' ? 'Resolved' : t.status === 'IN_PROGRESS' ? 'In Progress' : 'Pending',
           priority: t.priority,
-          date: t.createdAt
+          date: t.createdAt,
         })),
         vehicleCount,
         unauthorizedVehicles: 0,
-        nextDueDate: openInvoices[0]?.dueDate || latestInvoice?.dueDate || new Date().toISOString(),
-        unreadCount: 0
-      }
+        nextDueDate,
+        unreadCount: unreadMessagesCount,
+      },
     });
   } catch (err: any) {
     return res.status(500).json({ message: err.message });
@@ -135,36 +192,31 @@ router.get('/dashboard', async (req: Request, res: Response) => {
 router.get('/lease', async (req: Request, res: Response) => {
   try {
     const tenant = await getTenantFromUser(req.user?.userId);
-    const lease = tenant?.leases?.[0];
+    const lease = tenant?.leases?.find((l: any) => l.status === 'ACTIVE') || tenant?.leases?.[0];
+
+    const adminPhone = lease?.unit?.property?.company?.contactPhone || tenant?.company?.contactPhone || '+1 (514) 555-0199';
 
     if (!lease) {
       return res.json({
-        id: 'DEMO-LEASE',
-        unit: '101',
-        property: 'Le Mirage Condominiums & Suites',
-        address: '123 Main Street',
-        startDate: '2026-01-01',
-        endDate: '2027-12-31',
-        monthlyRent: 1250,
-        rent: 1250,
-        deposit: 1250,
-        status: 'ACTIVE',
-        adminPhone: '+1 (514) 555-0199'
+        hasLease: false,
+        id: null,
+        adminPhone
       });
     }
 
     return res.json({
+      hasLease: true,
       id: lease.id,
-      unit: lease.unit?.unitNumber || '101',
-      property: lease.unit?.property?.name || 'Le Mirage Condominiums & Suites',
-      address: lease.unit?.property?.address || '123 Main Street',
+      unit: lease.unit?.unitNumber || 'N/A',
+      property: lease.unit?.property?.name || 'Property',
+      address: lease.unit?.property?.address || 'Address on file',
       startDate: lease.startDate,
       endDate: lease.endDate,
       monthlyRent: Number(lease.rentAmount || 0),
       rent: Number(lease.rentAmount || 0),
       deposit: Number(lease.depositAmount || 0),
       status: lease.status || 'ACTIVE',
-      adminPhone: lease.unit?.property?.company?.contactPhone || '+1 (514) 555-0199'
+      adminPhone
     });
   } catch (err: any) {
     return res.status(500).json({ message: err.message });
@@ -181,11 +233,22 @@ router.get('/invoices', async (req: Request, res: Response) => {
       where: { tenantId: tenant.id },
       include: {
         lease: {
-          include: { unit: { include: { property: true } } }
+          include: {
+            unit: {
+              include: {
+                property: {
+                  include: { company: true }
+                }
+              }
+            }
+          }
         }
       },
       orderBy: { dueDate: 'desc' }
     });
+
+    const tenantName = `${tenant.firstName} ${tenant.lastName}`.trim();
+    const companyName = tenant.company?.name || 'Property Management';
 
     const formatted = invoices.map(inv => {
       const due = new Date(inv.dueDate);
@@ -195,9 +258,16 @@ router.get('/invoices', async (req: Request, res: Response) => {
       else if (inv.status === 'PARTIALLY_PAID') statusDisplay = 'Partial';
       else if (isPast) statusDisplay = 'Overdue';
 
+      const propName = inv.lease?.unit?.property?.name || 'Property';
+      const unitNum = inv.lease?.unit?.unitNumber || '';
+      const comp = inv.lease?.unit?.property?.company?.name || companyName;
+
       return {
         id: inv.invoiceNumber || `INV-${inv.id.slice(0, 8)}`,
         dbId: inv.id,
+        tenantName,
+        companyName: comp,
+        category: inv.category || 'RENT',
         month: due.toLocaleDateString('en-CA', { month: 'long', year: 'numeric' }),
         date: due.toLocaleDateString('en-CA'),
         dueDate: inv.dueDate,
@@ -205,26 +275,11 @@ router.get('/invoices', async (req: Request, res: Response) => {
         paidAmount: Number(inv.amountPaid),
         balanceDue: Math.max(0, Number(inv.amountDue) - Number(inv.amountPaid)),
         status: statusDisplay,
-        unit: inv.lease?.unit?.unitNumber || '101',
-        property: inv.lease?.unit?.property?.name || 'Property'
+        unit: unitNum,
+        property: propName,
+        serviceFees: 0
       };
     });
-
-    if (formatted.length === 0) {
-      formatted.push({
-        id: 'INV-2026-001',
-        dbId: '00000000-0000-0000-0000-000000000001',
-        month: 'February 2026',
-        date: '2026-02-01',
-        dueDate: new Date(),
-        amount: 1250,
-        paidAmount: 1250,
-        balanceDue: 0,
-        status: 'Paid',
-        unit: '101',
-        property: 'Le Mirage Condominiums & Suites'
-      });
-    }
 
     return res.json(formatted);
   } catch (err: any) {
@@ -244,26 +299,40 @@ router.get('/invoices/:id/download', async (req: Request, res: Response) => {
       },
       include: {
         lease: {
-          include: { unit: { include: { property: true } } }
+          include: {
+            unit: {
+              include: {
+                property: {
+                  include: { company: true }
+                }
+              }
+            }
+          }
         }
       }
     });
 
-    const invNum = invoice?.invoiceNumber || `INV-${req.params.id.slice(0, 8)}`;
+    if (!invoice) return res.status(404).json({ message: 'Invoice not found' });
+
+    const invNum = invoice.invoiceNumber || `INV-${invoice.id.slice(0, 8)}`;
+    const compName = invoice.lease?.unit?.property?.company?.name || tenant.company?.name || 'HORIZEX REAL ESTATE';
+    const propName = invoice.lease?.unit?.property?.name || 'Property';
+    const unitNum = invoice.lease?.unit?.unitNumber || 'N/A';
+
     const textContent = `=========================================
-HORIZEX REAL ESTATE
+${compName.toUpperCase()}
 OFFICIAL INVOICE RECEIPT
 =========================================
 Invoice Number: ${invNum}
 Tenant Name:    ${tenant.firstName} ${tenant.lastName}
-Property:       ${invoice?.lease?.unit?.property?.name || 'Le Mirage Condominiums & Suites'}
-Unit:           ${invoice?.lease?.unit?.unitNumber || '101'}
-Due Date:       ${invoice ? new Date(invoice.dueDate).toLocaleDateString('en-CA') : '2026-02-01'}
-Total Amount:   $${invoice ? Number(invoice.amountDue).toFixed(2) : '1,250.00'}
-Amount Paid:    $${invoice ? Number(invoice.amountPaid).toFixed(2) : '1,250.00'}
-Status:         ${invoice?.status || 'PAID'}
+Property:       ${propName}
+Unit:           ${unitNum}
+Due Date:       ${new Date(invoice.dueDate).toLocaleDateString('en-CA')}
+Total Amount:   $${Number(invoice.amountDue).toFixed(2)}
+Amount Paid:    $${Number(invoice.amountPaid).toFixed(2)}
+Status:         ${invoice.status}
 =========================================
-Thank you for your timely payment.
+Thank you for your payment.
 `;
 
     res.setHeader('Content-Type', 'text/plain');
@@ -345,6 +414,7 @@ router.post('/pay', async (req: Request, res: Response) => {
       success: true,
       message: 'Payment processed successfully',
       paymentId: payment.id,
+      referenceId: payment.referenceId,
       amount: payAmount
     });
   } catch (err: any) {
@@ -511,17 +581,21 @@ router.get('/documents', async (req: Request, res: Response) => {
       orderBy: { createdAt: 'desc' }
     });
 
-    const formatted = dbDocs.map(d => ({
-      id: d.id,
-      name: d.name,
-      type: d.type || 'Document',
-      date: d.createdAt.toISOString().split('T')[0],
-      expiryDate: d.expiryDate,
-      fileUrl: d.fileUrl || `/api/tenant/documents/${d.id}/download`,
-      url: d.fileUrl || `/api/tenant/documents/${d.id}/download`
-    }));
+    const formatted = dbDocs.map(d => {
+      const isCloudinary = d.fileUrl && d.fileUrl.startsWith('http');
+      const docUrl = isCloudinary ? d.fileUrl : `/api/tenant/documents/${d.id}/download`;
+      return {
+        id: d.id,
+        name: d.name,
+        type: d.type || 'Document',
+        date: d.createdAt.toISOString().split('T')[0],
+        expiryDate: d.expiryDate,
+        fileUrl: docUrl,
+        url: docUrl
+      };
+    });
 
-    // If no custom documents yet, generate real baseline Lease Agreement document
+    // If no custom documents yet, generate real baseline Lease Agreement document ONLY if active lease exists
     if (formatted.length === 0 && activeLease) {
       formatted.push({
         id: `lease-${activeLease.id.slice(0, 8)}`,
@@ -547,6 +621,7 @@ router.get('/documents/:id/download', async (req: Request, res: Response) => {
     const activeLease = tenant?.leases?.[0];
 
     const docId = req.params.id;
+    const disposition = (req.query.disposition as string) === 'inline' ? 'inline' : 'attachment';
 
     if (docId.startsWith('lease-')) {
       // Generate official lease agreement document text
@@ -556,17 +631,17 @@ HORIZEX REAL ESTATE - OFFICIAL LEASE AGREEMENT
 Agreement ID:  ${activeLease?.id || 'AGR-DEMO-001'}
 Tenant Name:   ${tenant.firstName} ${tenant.lastName}
 Tenant Email:  ${tenant.email}
-Property:      ${activeLease?.unit?.property?.name || 'Le Mirage Condominiums & Suites'}
-Unit Number:   ${activeLease?.unit?.unitNumber || '101'}
-Lease Term:    ${activeLease?.startDate ? new Date(activeLease.startDate).toLocaleDateString() : '2026-01-01'} to ${activeLease?.endDate ? new Date(activeLease.endDate).toLocaleDateString() : '2027-12-31'}
-Monthly Rent:  $${Number(activeLease?.rentAmount || 1250).toFixed(2)}
-Deposit:       $${Number(activeLease?.depositAmount || 1250).toFixed(2)}
+Property:      ${activeLease?.unit?.property?.name || 'Property'}
+Unit Number:   ${activeLease?.unit?.unitNumber || 'N/A'}
+Lease Term:    ${activeLease?.startDate ? new Date(activeLease.startDate).toLocaleDateString() : 'N/A'} to ${activeLease?.endDate ? new Date(activeLease.endDate).toLocaleDateString() : 'N/A'}
+Monthly Rent:  $${Number(activeLease?.rentAmount || 0).toFixed(2)}
+Deposit:       $${Number(activeLease?.depositAmount || 0).toFixed(2)}
 Status:        ${activeLease?.status || 'ACTIVE'}
 ===================================================
 Executed electronically. Verified by Horizex Property Management.
 `;
       res.setHeader('Content-Type', 'text/plain');
-      res.setHeader('Content-Disposition', `attachment; filename=Lease_Agreement_Unit_${activeLease?.unit?.unitNumber || '101'}.txt`);
+      res.setHeader('Content-Disposition', `${disposition}; filename=Lease_Agreement_Unit_${activeLease?.unit?.unitNumber || 'N/A'}.txt`);
       return res.send(content);
     }
 
@@ -576,7 +651,8 @@ Executed electronically. Verified by Horizex Property Management.
         isActive: true,
         OR: [
           { userId: tenant.id },
-          { userId: req.user?.userId }
+          { userId: req.user?.userId },
+          ...(activeLease ? [{ leaseId: activeLease.id }, { unitId: activeLease.unitId }] : [])
         ]
       }
     });
@@ -591,7 +667,7 @@ Executed electronically. Verified by Horizex Property Management.
         const mime = matches[1];
         const buffer = Buffer.from(matches[2], 'base64');
         res.setHeader('Content-Type', mime);
-        res.setHeader('Content-Disposition', `attachment; filename=${doc.name || 'document.pdf'}`);
+        res.setHeader('Content-Disposition', `${disposition}; filename=${encodeURIComponent(doc.name || 'document.pdf')}`);
         return res.send(buffer);
       }
     }
@@ -608,7 +684,7 @@ router.post('/documents', async (req: Request, res: Response) => {
     if (!tenant) return res.status(404).json({ message: 'Tenant not found' });
     const activeLease = tenant?.leases?.[0];
 
-    const { name, type, fileUrl, fileName, expiryDate } = req.body;
+    const { name, type, fileUrl, fileName, fileSize, expiryDate } = req.body;
 
     let finalFileUrl = fileUrl || null;
     if (finalFileUrl && typeof finalFileUrl === 'string' && finalFileUrl.startsWith('data:')) {
@@ -625,7 +701,8 @@ router.post('/documents', async (req: Request, res: Response) => {
         name: name || fileName || 'Tenant_Document.pdf',
         type: type || 'General Document',
         fileUrl: finalFileUrl,
-        mimeType: fileName?.endsWith('.png') ? 'image/png' : (fileName?.endsWith('.jpg') ? 'image/jpeg' : 'application/pdf'),
+        fileSize: fileSize || '1.0 MB',
+        mimeType: fileName?.endsWith('.png') ? 'image/png' : (fileName?.endsWith('.jpg') || fileName?.endsWith('.jpeg') ? 'image/jpeg' : 'application/pdf'),
         expiryDate: expiryDate ? new Date(expiryDate) : null,
         companyId: tenant.companyId,
         propertyId: activeLease?.unit?.propertyId || null,
@@ -636,10 +713,21 @@ router.post('/documents', async (req: Request, res: Response) => {
       }
     });
 
+    const isCloudinary = doc.fileUrl && doc.fileUrl.startsWith('http');
+    const docUrl = isCloudinary ? doc.fileUrl : `/api/tenant/documents/${doc.id}/download`;
+
     return res.status(201).json({
       success: true,
       message: 'Document uploaded successfully',
-      data: doc
+      data: {
+        id: doc.id,
+        name: doc.name,
+        type: doc.type,
+        date: doc.createdAt.toISOString().split('T')[0],
+        expiryDate: doc.expiryDate,
+        fileUrl: docUrl,
+        url: docUrl
+      }
     });
   } catch (err: any) {
     return res.status(500).json({ message: err.message });
@@ -672,15 +760,23 @@ router.get('/insurance', async (req: Request, res: Response) => {
     if (insuranceDoc) {
       let meta: any = {};
       if (insuranceDoc.links && typeof insuranceDoc.links === 'object') {
-        meta = Array.isArray(insuranceDoc.links) ? (insuranceDoc.links[0] || {}) : insuranceDoc.links;
+        if (Array.isArray(insuranceDoc.links)) {
+          const metaObj = (insuranceDoc.links as any[]).find((l: any) => l.provider || l.policyNumber || l.meta) || (insuranceDoc.links as any[])[0] || {};
+          meta = metaObj.meta || metaObj;
+        } else {
+          meta = insuranceDoc.links;
+        }
       }
 
       const endDate = meta.endDate || (insuranceDoc.expiryDate ? insuranceDoc.expiryDate.toISOString().split('T')[0] : (activeLease?.endDate ? new Date(activeLease.endDate).toISOString().split('T')[0] : null));
       const isExpired = endDate && new Date(endDate) < new Date();
 
+      const isCloudinary = insuranceDoc.fileUrl && insuranceDoc.fileUrl.startsWith('http');
+      const docUrl = isCloudinary ? insuranceDoc.fileUrl : (insuranceDoc.fileUrl ? `/api/tenant/documents/${insuranceDoc.id}/download` : null);
+
       return res.json({
         id: insuranceDoc.id,
-        provider: meta.provider || insuranceDoc.name.replace(/\.pdf$/i, ''),
+        provider: meta.provider || insuranceDoc.name.replace(/\.pdf$/i, '').replace(/_Insurance_Policy$/i, '').replace(/_/g, ' ') || 'Tenant Insurance',
         policyNumber: meta.policyNumber || 'POL-ONFILE',
         coverageType: meta.coverageType || 'Tenant Liability & Contents ($2M)',
         startDate: meta.startDate || (activeLease?.startDate ? new Date(activeLease.startDate).toISOString().split('T')[0] : insuranceDoc.createdAt.toISOString().split('T')[0]),
@@ -688,7 +784,7 @@ router.get('/insurance', async (req: Request, res: Response) => {
         status: isExpired ? 'EXPIRED' : (meta.status || 'Active'),
         verified: meta.verified ?? true,
         rejectionReason: meta.rejectionReason || null,
-        documentUrl: insuranceDoc.fileUrl || null,
+        documentUrl: docUrl,
         documentName: insuranceDoc.name || 'Insurance_Certificate.pdf'
       });
     }
@@ -723,22 +819,48 @@ router.post('/insurance', async (req: Request, res: Response) => {
       verified: false
     };
 
+    let finalFileUrl = fileUrl || null;
+    if (finalFileUrl && typeof finalFileUrl === 'string' && finalFileUrl.startsWith('data:')) {
+      try {
+        const cloudRes = await uploadBase64Image(finalFileUrl, 'horizex_insurance_documents');
+        if (cloudRes?.url) finalFileUrl = cloudRes.url;
+      } catch (err: any) {
+        console.warn('Tenant portal insurance Cloudinary upload skipped/failed:', err?.message || err);
+      }
+    }
+
+    const propertyId = activeLease?.unit?.propertyId || tenant.propertyId || null;
+    const unitId = activeLease?.unitId || tenant.unitId || null;
+    const companyId = tenant.companyId || activeLease?.unit?.property?.companyId || null;
+
+    const entityLinks: any[] = [
+      { entityType: 'USER', entityId: tenant.id },
+      ...(propertyId ? [{ entityType: 'PROPERTY', entityId: propertyId }] : []),
+      ...(unitId ? [{ entityType: 'UNIT', entityId: unitId }] : []),
+      ...(activeLease?.id ? [{ entityType: 'LEASE', entityId: activeLease.id }] : []),
+      { entityType: 'INSURANCE_META', ...meta }
+    ];
+
     const doc = await prisma.document.create({
       data: {
-        name: fileName || `${provider}_Insurance_Policy.pdf`,
+        name: fileName || `${provider.replace(/\s+/g, '_')}_Insurance_Policy.pdf`,
         type: 'Insurance',
-        fileUrl: fileUrl || null,
-        mimeType: fileName?.endsWith('.png') ? 'image/png' : fileName?.endsWith('.jpg') ? 'image/jpeg' : 'application/pdf',
+        fileUrl: finalFileUrl,
+        fileSize: '1.2 MB',
+        mimeType: fileName?.endsWith('.png') ? 'image/png' : (fileName?.endsWith('.jpg') || fileName?.endsWith('.jpeg') ? 'image/jpeg' : 'application/pdf'),
         expiryDate: expiryDate,
-        companyId: tenant.companyId,
-        propertyId: activeLease?.unit?.propertyId || null,
-        unitId: activeLease?.unitId || null,
+        companyId,
+        propertyId,
+        unitId,
         userId: tenant.id,
         leaseId: activeLease?.id || null,
-        links: meta,
+        links: entityLinks,
         isActive: true
       }
     });
+
+    const isCloudinary = doc.fileUrl && doc.fileUrl.startsWith('http');
+    const docUrl = isCloudinary ? doc.fileUrl : (doc.fileUrl ? `/api/tenant/documents/${doc.id}/download` : null);
 
     return res.json({
       success: true,
@@ -746,7 +868,7 @@ router.post('/insurance', async (req: Request, res: Response) => {
       data: {
         id: doc.id,
         ...meta,
-        documentUrl: doc.fileUrl,
+        documentUrl: docUrl,
         documentName: doc.name
       }
     });
