@@ -233,11 +233,22 @@ router.get('/invoices', async (req: Request, res: Response) => {
       where: { tenantId: tenant.id },
       include: {
         lease: {
-          include: { unit: { include: { property: true } } }
+          include: {
+            unit: {
+              include: {
+                property: {
+                  include: { company: true }
+                }
+              }
+            }
+          }
         }
       },
       orderBy: { dueDate: 'desc' }
     });
+
+    const tenantName = `${tenant.firstName} ${tenant.lastName}`.trim();
+    const companyName = tenant.company?.name || 'Property Management';
 
     const formatted = invoices.map(inv => {
       const due = new Date(inv.dueDate);
@@ -247,9 +258,16 @@ router.get('/invoices', async (req: Request, res: Response) => {
       else if (inv.status === 'PARTIALLY_PAID') statusDisplay = 'Partial';
       else if (isPast) statusDisplay = 'Overdue';
 
+      const propName = inv.lease?.unit?.property?.name || 'Property';
+      const unitNum = inv.lease?.unit?.unitNumber || '';
+      const comp = inv.lease?.unit?.property?.company?.name || companyName;
+
       return {
         id: inv.invoiceNumber || `INV-${inv.id.slice(0, 8)}`,
         dbId: inv.id,
+        tenantName,
+        companyName: comp,
+        category: inv.category || 'RENT',
         month: due.toLocaleDateString('en-CA', { month: 'long', year: 'numeric' }),
         date: due.toLocaleDateString('en-CA'),
         dueDate: inv.dueDate,
@@ -257,26 +275,11 @@ router.get('/invoices', async (req: Request, res: Response) => {
         paidAmount: Number(inv.amountPaid),
         balanceDue: Math.max(0, Number(inv.amountDue) - Number(inv.amountPaid)),
         status: statusDisplay,
-        unit: inv.lease?.unit?.unitNumber || '101',
-        property: inv.lease?.unit?.property?.name || 'Property'
+        unit: unitNum,
+        property: propName,
+        serviceFees: 0
       };
     });
-
-    if (formatted.length === 0) {
-      formatted.push({
-        id: 'INV-2026-001',
-        dbId: '00000000-0000-0000-0000-000000000001',
-        month: 'February 2026',
-        date: '2026-02-01',
-        dueDate: new Date(),
-        amount: 1250,
-        paidAmount: 1250,
-        balanceDue: 0,
-        status: 'Paid',
-        unit: '101',
-        property: 'Le Mirage Condominiums & Suites'
-      });
-    }
 
     return res.json(formatted);
   } catch (err: any) {
@@ -296,26 +299,40 @@ router.get('/invoices/:id/download', async (req: Request, res: Response) => {
       },
       include: {
         lease: {
-          include: { unit: { include: { property: true } } }
+          include: {
+            unit: {
+              include: {
+                property: {
+                  include: { company: true }
+                }
+              }
+            }
+          }
         }
       }
     });
 
-    const invNum = invoice?.invoiceNumber || `INV-${req.params.id.slice(0, 8)}`;
+    if (!invoice) return res.status(404).json({ message: 'Invoice not found' });
+
+    const invNum = invoice.invoiceNumber || `INV-${invoice.id.slice(0, 8)}`;
+    const compName = invoice.lease?.unit?.property?.company?.name || tenant.company?.name || 'HORIZEX REAL ESTATE';
+    const propName = invoice.lease?.unit?.property?.name || 'Property';
+    const unitNum = invoice.lease?.unit?.unitNumber || 'N/A';
+
     const textContent = `=========================================
-HORIZEX REAL ESTATE
+${compName.toUpperCase()}
 OFFICIAL INVOICE RECEIPT
 =========================================
 Invoice Number: ${invNum}
 Tenant Name:    ${tenant.firstName} ${tenant.lastName}
-Property:       ${invoice?.lease?.unit?.property?.name || 'Le Mirage Condominiums & Suites'}
-Unit:           ${invoice?.lease?.unit?.unitNumber || '101'}
-Due Date:       ${invoice ? new Date(invoice.dueDate).toLocaleDateString('en-CA') : '2026-02-01'}
-Total Amount:   $${invoice ? Number(invoice.amountDue).toFixed(2) : '1,250.00'}
-Amount Paid:    $${invoice ? Number(invoice.amountPaid).toFixed(2) : '1,250.00'}
-Status:         ${invoice?.status || 'PAID'}
+Property:       ${propName}
+Unit:           ${unitNum}
+Due Date:       ${new Date(invoice.dueDate).toLocaleDateString('en-CA')}
+Total Amount:   $${Number(invoice.amountDue).toFixed(2)}
+Amount Paid:    $${Number(invoice.amountPaid).toFixed(2)}
+Status:         ${invoice.status}
 =========================================
-Thank you for your timely payment.
+Thank you for your payment.
 `;
 
     res.setHeader('Content-Type', 'text/plain');
