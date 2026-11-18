@@ -20,12 +20,19 @@ export class CommunicationsService {
   // ==========================================
   static async getTemplates(companyId?: string | null): Promise<SMSTemplate[]> {
     try {
-      const templates: any[] = await prisma.$queryRawUnsafe(`
+      let query = `
         SELECT id, name, category, content, "companyId", "createdAt", "updatedAt"
         FROM "SmsTemplate"
         WHERE "isActive" = TRUE
-        ORDER BY "createdAt" DESC
-      `);
+      `;
+      const params: any[] = [];
+      if (companyId) {
+        query += ` AND ("companyId" = $1 OR "companyId" IS NULL)`;
+        params.push(companyId);
+      }
+      query += ` ORDER BY "createdAt" DESC`;
+
+      const templates: any[] = await prisma.$queryRawUnsafe(query, ...params);
       return templates.map((t) => ({
         id: t.id,
         name: t.name,
@@ -121,14 +128,21 @@ export class CommunicationsService {
   // ==========================================
   static async listCampaigns(companyId?: string | null) {
     try {
-      const campaigns: any[] = await prisma.$queryRawUnsafe(`
+      let query = `
         SELECT id, name, status, "totalRecipients", "successCount", "failedCount",
                "templateId", "customContent", "buildingId", "recipientType",
                "failedRecipients", "companyId", "createdAt", "updatedAt"
         FROM "SmsCampaign"
         WHERE "isActive" = TRUE
-        ORDER BY "createdAt" DESC
-      `);
+      `;
+      const params: any[] = [];
+      if (companyId) {
+        query += ` AND "companyId" = $1`;
+        params.push(companyId);
+      }
+      query += ` ORDER BY "createdAt" DESC`;
+
+      const campaigns: any[] = await prisma.$queryRawUnsafe(query, ...params);
 
       return campaigns.map((c) => ({
         id: c.id,
@@ -224,6 +238,7 @@ export class CommunicationsService {
     } else {
       // If no explicit recipientIds, query by building or all active tenants
       const tenantWhere: any = { isActive: true };
+      if (companyId) tenantWhere.companyId = companyId;
       if (bId) {
         tenantWhere.leases = {
           some: {
@@ -404,30 +419,25 @@ export class CommunicationsService {
   // ==========================================
   // 3. CONVERSATIONS & INBOX
   // ==========================================
-  static async listConversations(companyId?: string | null, userId?: string, userRole?: string) {
+  static async listConversations(
+    companyId?: string | null,
+    userId?: string,
+    userRole?: string,
+    buildingId?: string | null
+  ) {
     // If caller is an OWNER, show Admins / Property Managers to chat with
     if (userRole === 'OWNER') {
       const admins: any[] = await prisma.$queryRaw`
         SELECT id, "firstName", "lastName", email, phone, role::text as role
         FROM "User"
         WHERE role::text IN ('ADMIN', 'SUPER_ADMIN', 'PROPERTY_MANAGER')
+          AND "isActive" = TRUE
         ORDER BY "firstName" ASC
-        LIMIT 5
+        LIMIT 10
       `;
 
       if (!admins || admins.length === 0) {
-        return [
-          {
-            id: '13445edb-cdc2-475b-81c8-d8750e17ffa9',
-            name: 'Horizex Property Support',
-            email: 'admin@horizex.com',
-            phone: '+1 (514) 555-0100',
-            role: 'ADMIN',
-            unreadCount: 0,
-            lastMessage: null,
-            totalMessages: 0,
-          },
-        ];
+        return [];
       }
 
       return admins.map((a) => ({
@@ -444,7 +454,7 @@ export class CommunicationsService {
 
     const conversationsMap = new Map<string, any>();
 
-    // 1. Fetch Tenants
+    // 1. Fetch Tenants & Residents
     try {
       const tenantWhere: any = { isActive: true };
       if (companyId) tenantWhere.companyId = companyId;
@@ -457,6 +467,27 @@ export class CommunicationsService {
           lastName: true,
           email: true,
           phone: true,
+          companyId: true,
+          emergencyContact: true,
+          leases: {
+            where: { isActive: true },
+            select: {
+              status: true,
+              unit: {
+                select: {
+                  id: true,
+                  unitNumber: true,
+                  propertyId: true,
+                  property: {
+                    select: {
+                      id: true,
+                      name: true,
+                    },
+                  },
+                },
+              },
+            },
+          },
         },
       });
 
@@ -477,16 +508,47 @@ export class CommunicationsService {
       }
 
       for (const t of tenants) {
+        // Exclude mock / demo tenant
+        if ((t.firstName === 'Demo' && t.lastName === 'Tenant') || t.email === 'tenant@property.com') {
+          continue;
+        }
+
+        let meta: any = {};
+        if (t.emergencyContact) {
+          try {
+            meta = JSON.parse(t.emergencyContact);
+          } catch {
+            meta = { emergencyContact: t.emergencyContact };
+          }
+        }
+
+        const isResident = meta.type === 'Resident' || meta.type === 'RESIDENT';
+        const role = isResident ? 'RESIDENT' : 'TENANT';
+
+        const activeLease = t.leases?.find((l: any) => l.status === 'ACTIVE') || t.leases?.[0];
+        const propertyId = meta.propertyId || activeLease?.unit?.propertyId || null;
+        const propertyName = meta.propertyName || activeLease?.unit?.property?.name || null;
+        const unitNumber = meta.unitNumber || activeLease?.unit?.unitNumber || null;
+
+        // If buildingId filter is provided, skip non-matching tenants
+        if (buildingId && propertyId && propertyId !== buildingId) {
+          continue;
+        }
+
         const tMsgs = messageByTenant.get(t.id) || [];
         const latest = tMsgs[0] || null;
-        const name = `${t.firstName || ''} ${t.lastName || ''}`.trim() || 'Tenant';
+        const name = `${t.firstName || ''} ${t.lastName || ''}`.trim() || (isResident ? 'Resident' : 'Tenant');
 
         conversationsMap.set(t.id, {
           id: t.id,
           name,
           email: t.email,
           phone: t.phone || '',
-          role: 'TENANT',
+          role,
+          companyId: t.companyId,
+          propertyId,
+          propertyName,
+          unitNumber,
           unreadCount: 0,
           lastMessage: latest
             ? {
@@ -503,12 +565,19 @@ export class CommunicationsService {
 
     // 2. Fetch Team / Coworkers
     try {
+      const teamWhere: any = {
+        role: { in: ['COWORKER', 'PROPERTY_MANAGER', 'MAINTENANCE_STAFF', 'ACCOUNTANT', 'COMPANY_ADMIN'] },
+        isActive: true,
+      };
+      if (userId) {
+        teamWhere.id = { not: userId };
+      }
+      if (companyId) {
+        teamWhere.OR = [{ companyId: companyId }, { companyId: null }];
+      }
+
       const team = await prisma.user.findMany({
-        where: {
-          role: { in: ['COWORKER', 'PROPERTY_MANAGER', 'MAINTENANCE_STAFF', 'ACCOUNTANT', 'COMPANY_ADMIN'] },
-          isActive: true,
-          ...(userId ? { id: { not: userId } } : {}),
-        },
+        where: teamWhere,
         select: {
           id: true,
           firstName: true,
@@ -516,10 +585,13 @@ export class CommunicationsService {
           email: true,
           phone: true,
           role: true,
+          companyId: true,
         },
       });
 
       for (const member of team) {
+        if (member.firstName === 'Demo' || member.email?.startsWith('demo.')) continue;
+
         const latestNote = await prisma.note.findFirst({
           where: {
             targetType: 'COWORKER_CHAT',
@@ -538,6 +610,7 @@ export class CommunicationsService {
           email: member.email,
           phone: member.phone || '',
           role: 'COWORKER',
+          companyId: member.companyId,
           unreadCount: 0,
           lastMessage: latestNote
             ? {
@@ -554,11 +627,16 @@ export class CommunicationsService {
 
     // 3. Fetch Owners
     try {
+      const ownerWhere: any = {
+        role: 'OWNER',
+        isActive: true,
+      };
+      if (companyId) {
+        ownerWhere.OR = [{ companyId: companyId }, { companyId: null }];
+      }
+
       const owners = await prisma.user.findMany({
-        where: {
-          role: 'OWNER',
-          isActive: true,
-        },
+        where: ownerWhere,
         select: {
           id: true,
           firstName: true,
@@ -566,10 +644,15 @@ export class CommunicationsService {
           email: true,
           phone: true,
           role: true,
+          companyId: true,
         },
       });
 
       for (const owner of owners) {
+        if ((owner.firstName === 'Demo' && owner.lastName === 'Owner') || owner.email === 'owner@property.com') {
+          continue;
+        }
+
         const latestNote = await prisma.note.findFirst({
           where: {
             targetType: 'OWNER_CHAT',
@@ -588,6 +671,7 @@ export class CommunicationsService {
           email: owner.email,
           phone: owner.phone || '',
           role: 'OWNER',
+          companyId: owner.companyId,
           unreadCount: 0,
           lastMessage: latestNote
             ? {

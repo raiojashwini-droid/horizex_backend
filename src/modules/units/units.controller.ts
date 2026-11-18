@@ -5,7 +5,8 @@ import { sendSuccess } from '../../utils/apiResponse.util';
 export const listUnits = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const isSuperAdmin = req.user?.role === 'SUPER_ADMIN' || req.user?.role === 'ADMIN';
-    const companyId = isSuperAdmin ? undefined : req.user?.effectiveCompanyId;
+    const queryCompanyId = (req.query.companyId as string) || (req.headers['x-company-context'] as string);
+    const companyId = queryCompanyId && queryCompanyId !== 'all' ? queryCompanyId : (isSuperAdmin ? undefined : req.user?.effectiveCompanyId);
 
     const units = await UnitsService.listUnits({
       companyId,

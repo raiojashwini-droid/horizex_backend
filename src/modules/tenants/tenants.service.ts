@@ -1,6 +1,7 @@
 import { prisma } from '../../config/db';
 import { AppError } from '../../middlewares/errorHandler';
 import { createAuditLog } from '../../utils/auditLogger.util';
+import { hashPassword } from '../../utils/password.util';
 
 export class TenantsService {
   static async listTenants(companyId?: string | null, search?: string) {
@@ -291,6 +292,35 @@ export class TenantsService {
         },
       },
     });
+
+    // Create user login account strictly for Individual Tenant with default password '123456'
+    if (type === 'Individual' && email && !email.includes('@occupant.internal')) {
+      const passwordHash = await hashPassword('123456');
+
+      await prisma.user.upsert({
+        where: { email },
+        update: {
+          passwordHash,
+          role: 'TENANT',
+          companyId: tenant.companyId,
+          isActive: true,
+          firstName: tenant.firstName,
+          lastName: tenant.lastName,
+          phone: tenant.phone,
+        },
+        create: {
+          id: tenant.id,
+          email: tenant.email,
+          passwordHash,
+          firstName: tenant.firstName,
+          lastName: tenant.lastName,
+          phone: tenant.phone,
+          role: 'TENANT',
+          companyId: tenant.companyId,
+          isActive: true,
+        },
+      });
+    }
 
     await createAuditLog({
       userId: actorUserId,

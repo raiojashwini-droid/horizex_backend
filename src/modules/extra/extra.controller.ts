@@ -134,19 +134,29 @@ const formatNote = (note: any) => {
     meta = {};
   }
 
-  const rawText = meta.text !== undefined ? meta.text : note.content;
+  // Format clean readable text instead of raw JSON
+  let rawText = note.content;
+  if (meta.text !== undefined && meta.text !== null && meta.text !== '') {
+    rawText = meta.text;
+  } else if (typeof note.content === 'string' && note.content.startsWith('{')) {
+    rawText = note.title || 'Note recorded';
+  }
+
   const authorName = note.author
     ? `${note.author.firstName || ''} ${note.author.lastName || ''}`.trim() || 'Admin User'
-    : 'Admin User';
+    : (meta.createdBy || 'Admin User');
+
+  const resolvedCompanyId = meta.companyId || null;
+  const entityType = meta.entityType || note.targetType || 'GENERAL';
 
   return {
     ...note,
     content: rawText,
-    entityType: meta.entityType || note.targetType || 'TENANT',
-    entityId: meta.entityId || note.targetId || '',
-    targetType: meta.entityType || note.targetType || 'TENANT',
-    targetId: meta.entityId || note.targetId || '',
-    companyId: meta.companyId || (note.author as any)?.companyId || null,
+    entityType,
+    entityId: meta.entityId || note.targetId || resolvedCompanyId || '',
+    targetType: entityType,
+    targetId: meta.entityId || note.targetId || resolvedCompanyId || '',
+    companyId: resolvedCompanyId,
     category: meta.category || 'GENERAL',
     priority: meta.priority || 'MEDIUM',
     isPinned: meta.isPinned !== undefined ? Boolean(meta.isPinned) : false,
@@ -164,10 +174,31 @@ export const listNotes = async (req: Request, res: Response, next: NextFunction)
     const filterType = targetType || entityType;
     const filterId = targetId || entityId;
 
-    const effectiveCompanyId = (queryCompanyId as string) || req.user?.effectiveCompanyId;
+    const queryComp = (queryCompanyId as string) || (req.headers['x-company-context'] as string);
+    const isAdmin = req.user?.role === 'ADMIN' || req.user?.role === 'SUPER_ADMIN';
+    const effectiveCompanyId = queryComp && queryComp !== 'all'
+      ? queryComp
+      : (queryComp === 'all' || isAdmin ? undefined : req.user?.effectiveCompanyId || req.user?.companyId);
+
+    const EXCLUDED_SYSTEM_TARGET_TYPES = [
+      'PAYROLL_SHIFT',
+      'PAYROLL_RUN',
+      'PAYROLL_LEAVE',
+      'PAYROLL_OVERTIME',
+      'EMPLOYEE_DATA',
+      'EMPLOYEE_META',
+      'COWORKER_CHAT',
+      'OWNER_CHAT',
+    ];
 
     const where: any = {};
-    if (filterType) where.targetType = String(filterType);
+    if (filterType) {
+      where.targetType = String(filterType);
+    } else {
+      where.targetType = {
+        notIn: EXCLUDED_SYSTEM_TARGET_TYPES,
+      };
+    }
     if (filterId) where.targetId = String(filterId);
 
     const notes = await prisma.note.findMany({
@@ -178,7 +209,17 @@ export const listNotes = async (req: Request, res: Response, next: NextFunction)
       orderBy: { createdAt: 'desc' },
     });
 
-    let formatted = notes.map(formatNote);
+    let formatted = notes
+      .map(formatNote)
+      .filter((n) => {
+        const t = String(n.targetType || n.entityType || '').toUpperCase();
+        return (
+          !t.startsWith('PAYROLL_') &&
+          !t.startsWith('EMPLOYEE_') &&
+          t !== 'COWORKER_CHAT' &&
+          t !== 'OWNER_CHAT'
+        );
+      });
 
     if (effectiveCompanyId && effectiveCompanyId !== 'all') {
       const compIdStr = String(effectiveCompanyId);
@@ -188,11 +229,48 @@ export const listNotes = async (req: Request, res: Response, next: NextFunction)
       });
       const propIdSet = new Set(companyProperties.map((p) => String(p.id)));
 
+      const companyTenants = await prisma.tenant.findMany({
+        where: { companyId: compIdStr },
+        select: { id: true },
+      });
+      const tenantIdSet = new Set(companyTenants.map((t) => String(t.id)));
+
+      const companyUnits = await prisma.unit.findMany({
+        where: { propertyId: { in: Array.from(propIdSet) } },
+        select: { id: true },
+      });
+      const unitIdSet = new Set(companyUnits.map((u) => String(u.id)));
+
+      const companyLeases = await prisma.lease.findMany({
+        where: { unitId: { in: Array.from(unitIdSet) } },
+        select: { id: true },
+      });
+      const leaseIdSet = new Set(companyLeases.map((l) => String(l.id)));
+
+      const companyTalCases = await prisma.talCase.findMany({
+        where: { propertyId: { in: Array.from(propIdSet) } },
+        select: { id: true },
+      });
+      const talCaseIdSet = new Set(companyTalCases.map((c) => String(c.id)));
+
       formatted = formatted.filter((n) => {
         if (n.companyId) return String(n.companyId) === compIdStr;
-        if (n.author?.companyId) return String(n.author.companyId) === compIdStr;
-        if (n.entityType === 'COMPANY') return String(n.entityId) === compIdStr;
-        if ((n.entityType === 'BUILDING' || n.entityType === 'PROPERTY') && propIdSet.has(String(n.entityId))) {
+        if ((n.entityType === 'COMPANY' || n.targetType === 'COMPANY') && String(n.entityId || n.targetId) === compIdStr) {
+          return true;
+        }
+        if ((n.entityType === 'BUILDING' || n.entityType === 'PROPERTY') && propIdSet.has(String(n.entityId || n.targetId))) {
+          return true;
+        }
+        if (n.entityType === 'TENANT' && tenantIdSet.has(String(n.entityId || n.targetId))) {
+          return true;
+        }
+        if ((n.entityType === 'APARTMENT' || n.entityType === 'UNIT') && unitIdSet.has(String(n.entityId || n.targetId))) {
+          return true;
+        }
+        if ((n.entityType === 'LEASE' || n.entityType === 'RENEWAL') && leaseIdSet.has(String(n.entityId || n.targetId))) {
+          return true;
+        }
+        if (n.entityType === 'TAL_CASE' && talCaseIdSet.has(String(n.entityId || n.targetId))) {
           return true;
         }
         return false;
@@ -231,7 +309,8 @@ export const createNote = async (req: Request, res: Response, next: NextFunction
     const entityType = req.body.entityType || req.body.targetType || 'TENANT';
     const entityId = String(req.body.entityId || req.body.targetId || '');
 
-    let companyId = req.body.companyId || req.user?.effectiveCompanyId || (req.user as any)?.companyId || null;
+    let companyId = req.body.companyId || (req.headers['x-company-context'] as string) || req.user?.effectiveCompanyId || (req.user as any)?.companyId || null;
+    if (companyId === 'all') companyId = null;
 
     if (!companyId && entityType === 'COMPANY' && entityId && entityId !== '0') {
       companyId = entityId;
@@ -241,6 +320,30 @@ export const createNote = async (req: Request, res: Response, next: NextFunction
         select: { companyId: true },
       });
       if (prop?.companyId) companyId = prop.companyId;
+    } else if (!companyId && entityType === 'TENANT' && entityId && entityId !== '0') {
+      const ten = await prisma.tenant.findUnique({
+        where: { id: entityId },
+        select: { companyId: true },
+      });
+      if (ten?.companyId) companyId = ten.companyId;
+    } else if (!companyId && (entityType === 'APARTMENT' || entityType === 'UNIT') && entityId && entityId !== '0') {
+      const un = await prisma.unit.findUnique({
+        where: { id: entityId },
+        select: { property: { select: { companyId: true } } },
+      });
+      if (un?.property?.companyId) companyId = un.property.companyId;
+    } else if (!companyId && (entityType === 'LEASE' || entityType === 'RENEWAL') && entityId && entityId !== '0') {
+      const ls = await prisma.lease.findUnique({
+        where: { id: entityId },
+        select: { unit: { select: { property: { select: { companyId: true } } } } },
+      });
+      if (ls?.unit?.property?.companyId) companyId = ls.unit.property.companyId;
+    } else if (!companyId && entityType === 'TAL_CASE' && entityId && entityId !== '0') {
+      const tc = await prisma.talCase.findUnique({
+        where: { id: entityId },
+        select: { property: { select: { companyId: true } } },
+      });
+      if (tc?.property?.companyId) companyId = tc.property.companyId;
     }
 
     const meta = {

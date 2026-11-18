@@ -9,7 +9,8 @@ export const getUnreadStats = async (req: Request, res: Response) => {
 export const getTemplates = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const isAdmin = req.user?.role === 'ADMIN' || req.user?.role === 'SUPER_ADMIN';
-    const companyId = isAdmin ? undefined : req.user?.effectiveCompanyId;
+    const requestedCompanyId = (req.query.companyId as string) || (req.headers['x-company-context'] as string) || req.user?.effectiveCompanyId;
+    const companyId = requestedCompanyId || (isAdmin ? undefined : req.user?.companyId);
     const templates = await CommunicationsService.getTemplates(companyId);
     return sendSuccess(res, templates);
   } catch (err) {
@@ -54,12 +55,15 @@ export const deleteTemplate = async (req: Request, res: Response, next: NextFunc
 export const listConversations = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const isAdmin = req.user?.role === 'ADMIN' || req.user?.role === 'SUPER_ADMIN';
-    const companyId = isAdmin ? undefined : req.user?.effectiveCompanyId;
+    const requestedCompanyId = (req.query.companyId as string) || (req.headers['x-company-context'] as string) || req.user?.effectiveCompanyId;
+    const companyId = requestedCompanyId || (isAdmin ? undefined : req.user?.companyId);
+    const buildingId = (req.query.buildingId as string) || (req.query.propertyId as string) || undefined;
 
     const conversations = await CommunicationsService.listConversations(
       companyId,
       req.user?.userId,
-      req.user?.role
+      req.user?.role,
+      buildingId
     );
     return sendSuccess(res, conversations, 200);
   } catch (err) {
@@ -102,7 +106,8 @@ export const sendMessage = async (req: Request, res: Response, next: NextFunctio
 export const listCampaigns = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const isAdmin = req.user?.role === 'ADMIN' || req.user?.role === 'SUPER_ADMIN';
-    const companyId = isAdmin ? undefined : req.user?.effectiveCompanyId;
+    const requestedCompanyId = (req.query.companyId as string) || (req.headers['x-company-context'] as string) || req.user?.effectiveCompanyId;
+    const companyId = requestedCompanyId || (isAdmin ? undefined : req.user?.companyId);
     const campaigns = await CommunicationsService.listCampaigns(companyId);
     return sendSuccess(res, campaigns);
   } catch (err) {
@@ -113,7 +118,8 @@ export const listCampaigns = async (req: Request, res: Response, next: NextFunct
 export const sendCampaign = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const isAdmin = req.user?.role === 'ADMIN' || req.user?.role === 'SUPER_ADMIN';
-    const companyId = isAdmin ? undefined : req.user?.effectiveCompanyId;
+    const requestedCompanyId = req.body.companyId || (req.query.companyId as string) || (req.headers['x-company-context'] as string) || req.user?.effectiveCompanyId;
+    const companyId = requestedCompanyId || (isAdmin ? undefined : req.user?.companyId);
 
     const result = await CommunicationsService.sendCampaign(req.body, companyId, req.user?.userId);
     return sendSuccess(res, result, 200);
