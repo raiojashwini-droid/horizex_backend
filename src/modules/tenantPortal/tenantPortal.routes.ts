@@ -95,7 +95,10 @@ router.get('/dashboard', async (req: Request, res: Response) => {
     const openTicketsCount = tenant
       ? await prisma.maintenanceTicket.count({
           where: {
-            tenantId: tenant.id,
+            OR: [
+              { tenantId: tenant.id },
+              ...(activeLease ? [{ unitId: activeLease.unitId }] : [])
+            ],
             status: { notIn: ['CLOSED', 'RESOLVED'] },
           },
         })
@@ -103,7 +106,12 @@ router.get('/dashboard', async (req: Request, res: Response) => {
 
     const recentTickets = tenant
       ? await prisma.maintenanceTicket.findMany({
-          where: { tenantId: tenant.id },
+          where: {
+            OR: [
+              { tenantId: tenant.id },
+              ...(activeLease ? [{ unitId: activeLease.unitId }] : [])
+            ]
+          },
           orderBy: { createdAt: 'desc' },
           take: 3,
           select: {
@@ -428,22 +436,64 @@ router.get('/tickets', async (req: Request, res: Response) => {
     const tenant = await getTenantFromUser(req.user?.userId);
     if (!tenant) return res.json([]);
 
+    const activeLease = tenant?.leases?.[0];
+
     const tickets = await prisma.maintenanceTicket.findMany({
-      where: { tenantId: tenant.id }, // Scoped strictly to this tenant
-      include: { unit: true },
+      where: {
+        OR: [
+          { tenantId: tenant.id },
+          ...(activeLease ? [{ unitId: activeLease.unitId }] : [])
+        ]
+      },
+      include: {
+        unit: true,
+        property: true,
+        assignee: {
+          include: {
+            user: { select: { firstName: true, lastName: true, email: true, phone: true } }
+          }
+        }
+      },
       orderBy: { createdAt: 'desc' }
     });
 
-    return res.json(tickets.map(t => ({
-      id: t.id.slice(0, 8).toUpperCase(),
-      dbId: t.id,
-      subject: t.title,
-      desc: t.description,
-      priority: t.priority,
-      status: t.status === 'RESOLVED' ? 'Resolved' : (t.status === 'IN_PROGRESS' ? 'In Progress' : 'Pending'),
-      date: t.createdAt.toISOString().split('T')[0],
-      unitNumber: t.unit?.unitNumber || ''
-    })));
+    return res.json(tickets.map(t => {
+      const displayId = `TCK-${t.id.slice(0, 6).toUpperCase()}`;
+      const normPriority = (t.priority === 'HIGH' || t.priority === 'EMERGENCY') ? 'High' : (t.priority === 'LOW' ? 'Low' : 'Medium');
+      const normStatus = (t.status === 'RESOLVED' || t.status === 'CLOSED') ? 'Resolved' : (t.status === 'IN_PROGRESS' || t.status === 'PENDING_PARTS') ? 'In Progress' : 'Pending';
+
+      const attachments = (t.photoUrls || []).map(url => ({
+        url,
+        type: (url.match(/\.(mp4|mov|webm)($|\?)/i) || url.startsWith('data:video/')) ? 'video' : 'image'
+      }));
+
+      const assigneeName = t.assignee?.user
+        ? `${t.assignee.user.firstName || ''} ${t.assignee.user.lastName || ''}`.trim()
+        : null;
+
+      return {
+        id: displayId,
+        dbId: t.id,
+        displayId,
+        subject: t.title,
+        title: t.title,
+        desc: t.description,
+        description: t.description,
+        priority: normPriority,
+        rawPriority: t.priority,
+        status: normStatus,
+        rawStatus: t.status,
+        date: t.createdAt.toISOString().split('T')[0],
+        createdAt: t.createdAt.toISOString(),
+        unitNumber: t.unit?.unitNumber || '',
+        propertyName: t.property?.name || '',
+        attachments,
+        photoUrls: t.photoUrls || [],
+        assignee: assigneeName,
+        resolutionNote: t.resolutionNote || null,
+        resolvedAt: t.resolvedAt ? t.resolvedAt.toISOString().split('T')[0] : null
+      };
+    }));
   } catch (err: any) {
     return res.status(500).json({ message: err.message });
   }
@@ -454,33 +504,93 @@ router.post('/tickets', async (req: Request, res: Response) => {
     const tenant = await getTenantFromUser(req.user?.userId);
     if (!tenant) return res.status(404).json({ message: 'Tenant not found' });
 
-    const activeLease = tenant.leases?.[0];
-    if (!activeLease) {
-      return res.status(400).json({ message: 'No active lease found to create ticket' });
+    const activeLease = tenant.leases?.[0] || await prisma.lease.findFirst({
+      where: { tenantId: tenant.id },
+      include: { unit: { include: { property: true } } },
+      orderBy: { createdAt: 'desc' }
+    });
+
+    let finalPropertyId = activeLease?.unit?.propertyId;
+    let finalUnitId = activeLease?.unitId;
+
+    if (!finalPropertyId || !finalUnitId) {
+      const defaultProp = await prisma.property.findFirst({
+        where: tenant.companyId ? { companyId: tenant.companyId, isActive: true } : { isActive: true },
+        include: { units: true }
+      });
+      if (defaultProp) {
+        finalPropertyId = defaultProp.id;
+        finalUnitId = defaultProp.units?.[0]?.id;
+      }
     }
 
-    const { subject, title, description, priority } = req.body;
+    if (!finalPropertyId || !finalUnitId) {
+      return res.status(400).json({ message: 'No property or unit assigned to your account to raise maintenance requests.' });
+    }
+
+    const { subject, title, description, priority, photoUrls } = req.body;
+
+    let uploadedUrls: string[] = [];
+    if (Array.isArray(photoUrls) && photoUrls.length > 0) {
+      for (const item of photoUrls) {
+        if (typeof item === 'string') {
+          if (item.startsWith('http://') || item.startsWith('https://')) {
+            uploadedUrls.push(item);
+          } else if (item.startsWith('data:')) {
+            try {
+              const cloudRes = await uploadBase64Image(item, 'horizex_maintenance_tickets');
+              if (cloudRes?.url) {
+                uploadedUrls.push(cloudRes.url);
+              } else {
+                uploadedUrls.push(item);
+              }
+            } catch (err: any) {
+              console.warn('Ticket attachment upload error:', err?.message || err);
+              uploadedUrls.push(item);
+            }
+          }
+        }
+      }
+    }
+
+    const rawPriority = (priority || 'Medium').toString().toUpperCase();
+    const cleanPriority = rawPriority === 'EMERGENCY' ? 'EMERGENCY' : (rawPriority === 'HIGH' || rawPriority === 'URGENT') ? 'HIGH' : (rawPriority === 'LOW' ? 'LOW' : 'MEDIUM');
 
     const ticket = await prisma.maintenanceTicket.create({
       data: {
         title: subject || title || 'Maintenance Request',
         description: description || '',
-        priority: (priority?.toUpperCase() === 'EMERGENCY') ? 'EMERGENCY' : (priority?.toUpperCase() === 'HIGH' || priority?.toUpperCase() === 'URGENT') ? 'HIGH' : (priority?.toUpperCase() === 'LOW' ? 'LOW' : 'MEDIUM'),
+        priority: cleanPriority as any,
         status: 'SUBMITTED',
-        propertyId: activeLease.unit.propertyId,
-        unitId: activeLease.unitId,
-        tenantId: tenant.id
-      }
+        propertyId: finalPropertyId,
+        unitId: finalUnitId,
+        tenantId: tenant.id,
+        photoUrls: uploadedUrls
+      },
+      include: { unit: true, property: true }
     });
 
+    const displayId = `TCK-${ticket.id.slice(0, 6).toUpperCase()}`;
+
     return res.status(201).json({
-      id: ticket.id.slice(0, 8).toUpperCase(),
+      id: displayId,
       dbId: ticket.id,
+      displayId,
       subject: ticket.title,
+      title: ticket.title,
       desc: ticket.description,
-      priority: ticket.priority,
+      description: ticket.description,
+      priority: cleanPriority === 'HIGH' ? 'High' : cleanPriority === 'LOW' ? 'Low' : cleanPriority === 'EMERGENCY' ? 'Emergency' : 'Medium',
       status: 'Pending',
-      date: ticket.createdAt.toISOString().split('T')[0]
+      date: ticket.createdAt.toISOString().split('T')[0],
+      createdAt: ticket.createdAt.toISOString(),
+      unitNumber: ticket.unit?.unitNumber || '',
+      propertyName: ticket.property?.name || '',
+      attachments: uploadedUrls.map(url => ({
+        url,
+        type: (url.match(/\.(mp4|mov|webm)($|\?)/i) || url.startsWith('data:video/')) ? 'video' : 'image'
+      })),
+      photoUrls: uploadedUrls
     });
   } catch (err: any) {
     return res.status(500).json({ message: err.message });
