@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express';
 import { prisma } from '../../config/db';
 import { authenticate } from '../../middlewares/auth.middleware';
 import { uploadBase64Image } from '../../config/cloudinary';
+import { emitToConversation, emitGlobal } from '../../config/socket';
 import crypto from 'crypto';
 
 const router = Router();
@@ -11,13 +12,13 @@ router.use(authenticate);
 async function getTenantFromUser(userId?: string) {
   if (!userId) return null;
   const user = await prisma.user.findUnique({ where: { id: userId } });
-  if (!user) return null;
 
   return prisma.tenant.findFirst({
     where: {
       OR: [
-        { email: { equals: user.email, mode: 'insensitive' } },
-        { id: user.id }
+        ...(user?.email ? [{ email: { equals: user.email, mode: 'insensitive' as const } }] : []),
+        { id: userId },
+        ...(user?.id ? [{ id: user.id }] : [])
       ]
     },
     include: {
@@ -132,7 +133,10 @@ router.get('/dashboard', async (req: Request, res: Response) => {
 
     const unreadMessagesCount = tenant
       ? await prisma.communicationMessage.count({
-          where: { recipientId: tenant.id },
+          where: {
+            recipientId: tenant.id,
+            subject: 'ADMIN_MSG:UNREAD',
+          },
         })
       : 0;
 
@@ -177,14 +181,21 @@ router.get('/dashboard', async (req: Request, res: Response) => {
         leaseStatus: activeLease?.status || 'None',
         leaseExpiry: activeLease?.endDate ? new Date(activeLease.endDate).toISOString() : null,
         openTickets: openTicketsCount,
-        recentTickets: recentTickets.map((t) => ({
-          id: t.id,
-          title: t.title,
-          subject: t.title,
-          status: t.status === 'RESOLVED' ? 'Resolved' : t.status === 'IN_PROGRESS' ? 'In Progress' : 'Pending',
-          priority: t.priority,
-          date: t.createdAt,
-        })),
+        recentTickets: recentTickets.map((t) => {
+          const displayId = `TCK-${t.id.slice(0, 6).toUpperCase()}`;
+          const normStatus = (t.status === 'RESOLVED' || t.status === 'CLOSED') ? 'Resolved' : (t.status === 'IN_PROGRESS' || t.status === 'PENDING_PARTS') ? 'In Progress' : 'Pending';
+          const normPriority = (t.priority === 'HIGH' || t.priority === 'EMERGENCY') ? 'High' : (t.priority === 'LOW' ? 'Low' : 'Medium');
+          return {
+            id: displayId,
+            dbId: t.id,
+            displayId,
+            title: t.title,
+            subject: t.title,
+            status: normStatus,
+            priority: normPriority,
+            date: t.createdAt ? new Date(t.createdAt).toISOString().split('T')[0] : '',
+          };
+        }),
         vehicleCount,
         unauthorizedVehicles: 0,
         nextDueDate,
@@ -649,7 +660,7 @@ router.get('/vehicles', async (req: Request, res: Response) => {
         unitNumber: v.unit?.unitNumber || activeLease?.unit?.unitNumber || '-',
         buildingName: v.unit?.property?.name || activeLease?.unit?.property?.name || 'Horizex Property',
         isAuthorized,
-        status: isAuthorized ? 'Authorized' : 'Not Authorized',
+        status: isAuthorized ? 'Authorized' : 'Unauthorized',
         issue: isAuthorized ? null : 'Lease Expired',
         createdAt: v.createdAt,
       };
@@ -1120,102 +1131,93 @@ router.get('/reports', async (req: Request, res: Response) => {
       });
     }
 
-    if (!tenant) {
-      return res.json({
-        reports: [],
-        stats: {
-          reportsViewable: 0,
-          reportsViewableSub: 'Real-time',
-          paidAmount: 0,
-          paidCount: 0,
-          outstandingAmount: 0,
-          dataLatency: 'Real-time'
-        }
-      });
-    }
-
-    // 1. Fetch payments belonging strictly to this tenant
-    const payments = await prisma.payment.findMany({
-      where: { tenantId: tenant.id },
-      include: { invoice: true },
-      orderBy: { paidAt: 'desc' }
-    });
-
-    // 2. Fetch invoices belonging strictly to this tenant
-    const invoices = await prisma.invoice.findMany({
-      where: { tenantId: tenant.id },
-      orderBy: { dueDate: 'desc' }
-    });
-
     let totalPaid = 0;
-    const paymentRows = payments.map(p => {
-      const amt = Number(p.amount);
-      totalPaid += amt;
-      return {
-        id: p.id,
-        date: p.paidAt.toISOString(),
-        invoiceNo: p.invoice?.invoiceNumber || p.referenceId || `PAY-${p.id.slice(0, 8).toUpperCase()}`,
-        method: p.paymentMethod === 'INTERAC_E_TRANSFER'
-          ? 'Interac e-Transfer'
-          : p.paymentMethod === 'BANK_TRANSFER'
-          ? 'Bank Transfer'
-          : p.paymentMethod === 'CREDIT_CARD'
-          ? 'Credit Card'
-          : 'Online Payment',
-        amount: amt,
-        status: 'Completed'
-      };
-    });
+    let totalOutstanding = 0;
+    const paymentRows: any[] = [];
+    const invoiceRows: any[] = [];
 
-    // If payments table has 0 rows but invoices has paid amount, extract from invoices
-    if (paymentRows.length === 0) {
-      const paidInvoices = invoices.filter(inv => Number(inv.amountPaid) > 0);
-      for (const inv of paidInvoices) {
-        const amt = Number(inv.amountPaid);
+    if (tenant) {
+      // 1. Fetch payments belonging strictly to this tenant
+      const payments = await prisma.payment.findMany({
+        where: { tenantId: tenant.id },
+        include: { invoice: true },
+        orderBy: { paidAt: 'desc' }
+      });
+
+      // 2. Fetch invoices belonging strictly to this tenant
+      const invoices = await prisma.invoice.findMany({
+        where: { tenantId: tenant.id },
+        orderBy: { dueDate: 'desc' }
+      });
+
+      paymentRows.push(...payments.map(p => {
+        const amt = Number(p.amount);
         totalPaid += amt;
-        paymentRows.push({
-          id: `inv-pay-${inv.id}`,
-          date: (inv.updatedAt || inv.dueDate).toISOString(),
-          invoiceNo: inv.invoiceNumber || `INV-${inv.id.slice(0, 8).toUpperCase()}`,
-          method: 'Online Payment',
+        return {
+          id: p.id,
+          date: p.paidAt.toISOString(),
+          invoiceNo: p.invoice?.invoiceNumber || p.referenceId || `PAY-${p.id.slice(0, 8).toUpperCase()}`,
+          method: p.paymentMethod === 'INTERAC_E_TRANSFER'
+            ? 'Interac e-Transfer'
+            : p.paymentMethod === 'BANK_TRANSFER'
+            ? 'Bank Transfer'
+            : p.paymentMethod === 'CREDIT_CARD'
+            ? 'Credit Card'
+            : 'Online Payment',
           amount: amt,
           status: 'Completed'
-        });
+        };
+      }));
+
+      // If payments table has 0 rows but invoices has paid amount, extract from invoices
+      if (paymentRows.length === 0) {
+        const paidInvoices = invoices.filter(inv => Number(inv.amountPaid) > 0);
+        for (const inv of paidInvoices) {
+          const amt = Number(inv.amountPaid);
+          totalPaid += amt;
+          paymentRows.push({
+            id: `inv-pay-${inv.id}`,
+            date: (inv.updatedAt || inv.dueDate).toISOString(),
+            invoiceNo: inv.invoiceNumber || `INV-${inv.id.slice(0, 8).toUpperCase()}`,
+            method: 'Online Payment',
+            amount: amt,
+            status: 'Completed'
+          });
+        }
       }
+
+      invoiceRows.push(...invoices.map(inv => {
+        const amt = Number(inv.amountDue);
+        const paid = Number(inv.amountPaid);
+        const bal = Math.max(0, amt - paid);
+        totalOutstanding += bal;
+
+        let st = 'Paid';
+        if (bal > 0 && paid > 0) st = 'Partial';
+        else if (bal > 0 && new Date(inv.dueDate) < new Date()) st = 'Overdue';
+        else if (bal > 0) st = 'Unpaid';
+
+        return {
+          id: inv.id,
+          date: inv.dueDate.toISOString(),
+          invoiceNo: inv.invoiceNumber || `INV-${inv.id.slice(0, 8).toUpperCase()}`,
+          month: new Date(inv.dueDate).toLocaleDateString('en-CA', { month: 'long', year: 'numeric' }),
+          status: st,
+          amount: amt,
+          paid: paid,
+          balance: bal
+        };
+      }));
     }
 
-    let totalOutstanding = 0;
-    const invoiceRows = invoices.map(inv => {
-      const amt = Number(inv.amountDue);
-      const paid = Number(inv.amountPaid);
-      const bal = Math.max(0, amt - paid);
-      totalOutstanding += bal;
-
-      let st = 'Paid';
-      if (bal > 0 && paid > 0) st = 'Partial';
-      else if (bal > 0 && new Date(inv.dueDate) < new Date()) st = 'Overdue';
-      else if (bal > 0) st = 'Unpaid';
-
-      return {
-        id: inv.id,
-        date: inv.dueDate.toISOString(),
-        invoiceNo: inv.invoiceNumber || `INV-${inv.id.slice(0, 8).toUpperCase()}`,
-        month: new Date(inv.dueDate).toLocaleDateString('en-CA', { month: 'long', year: 'numeric' }),
-        status: st,
-        amount: amt,
-        paid: paid,
-        balance: bal
-      };
-    });
-
-    const activeLease = tenant.leases?.find((l: any) => l.status === 'ACTIVE' && l.isActive) || tenant.leases?.[0];
-    const propertyName = activeLease?.unit?.property?.name || tenant.company?.name || 'Horizex Real Estate';
+    const activeLease = tenant?.leases?.find((l: any) => l.status === 'ACTIVE' && l.isActive) || tenant?.leases?.[0];
+    const propertyName = activeLease?.unit?.property?.name || tenant?.company?.name || 'Horizex Real Estate';
     const unitNumber = activeLease?.unit?.unitNumber || '';
 
     return res.json({
       tenantInfo: {
-        name: `${tenant.firstName} ${tenant.lastName}`.trim(),
-        email: tenant.email,
+        name: tenant ? `${tenant.firstName} ${tenant.lastName}`.trim() : 'Account Statement',
+        email: tenant?.email || '',
         propertyName,
         unitNumber,
       },
@@ -1434,16 +1436,37 @@ router.post('/messages', async (req: Request, res: Response) => {
       }
     });
 
-    return res.status(201).json({
+    const responsePayload = {
       id: comm.id,
       senderId: userId || 'me',
       recipientId: tenant.id,
+      receiverId: tenant.id,
       content: comm.message,
       message: comm.message,
       createdAt: new Date(comm.sentAt).toISOString(),
+      sentAt: new Date(comm.sentAt).toISOString(),
       direction: 'OUTBOUND',
       isMe: true,
+      smsStatus: 'delivered',
+    };
+
+    // Broadcast to room for Admin and any other open screens
+    emitToConversation(tenant.id, 'new_message', {
+      ...responsePayload,
+      direction: 'INBOUND', // For the Admin watching this thread
+      isMe: false,          // For the Admin watching this thread
     });
+
+    emitGlobal('conversation_updated', {
+      id: tenant.id,
+      lastMessage: {
+        content: comm.message,
+        createdAt: new Date(comm.sentAt).toISOString(),
+      },
+      unreadCountDelta: 1,
+    });
+
+    return res.status(201).json(responsePayload);
   } catch (err: any) {
     return res.status(500).json({ message: err.message });
   }

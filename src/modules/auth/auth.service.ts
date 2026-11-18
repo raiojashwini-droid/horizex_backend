@@ -7,6 +7,7 @@ import {
   TokenPayload,
 } from '../../utils/jwt.util';
 import { AppError } from '../../middlewares/errorHandler';
+import { uploadBase64Image } from '../../config/cloudinary';
 
 // In-memory cache for profile fields not stored in Prisma schema
 const profileExtras: Record<string, any> = {};
@@ -156,7 +157,18 @@ export class AuthService {
       throw new AppError('User account not found or inactive', 404, 'USER_NOT_FOUND');
     }
 
-    const extra = profileExtras[userId] || {};
+    // Attempt to load database-persisted extras from Note table
+    let extraDb: any = {};
+    try {
+      const extraNote = await prisma.note.findFirst({
+        where: { targetType: 'USER_PROFILE_EXTRA', targetId: userId },
+      });
+      if (extraNote?.content) {
+        extraDb = JSON.parse(extraNote.content);
+      }
+    } catch (_) {}
+
+    const extra = { ...extraDb, ...(profileExtras[userId] || {}) };
     const fullName = `${user.firstName || ''} ${user.lastName || ''}`.trim();
     return {
       id: user.id,
@@ -214,15 +226,64 @@ export class AuthService {
       }
     }
 
-    profileExtras[userId] = {
+    // Cloudinary upload with safe fallback for dummy credentials
+    let finalPhotoUrl = data.profilePictureUrl;
+    if (data.profilePictureUrl && typeof data.profilePictureUrl === 'string' && data.profilePictureUrl.startsWith('data:image/')) {
+      try {
+        const cloudRes = await uploadBase64Image(data.profilePictureUrl, 'horizex_profiles');
+        if (cloudRes?.url) {
+          finalPhotoUrl = cloudRes.url;
+        }
+      } catch (cloudErr: any) {
+        console.warn('Cloudinary upload notice (fallback active until credentials provided):', cloudErr?.message || cloudErr);
+        finalPhotoUrl = data.profilePictureUrl;
+      }
+    }
+
+    // Load existing database-persisted extras
+    let existingExtraDb: any = {};
+    let existingNote: any = null;
+    try {
+      existingNote = await prisma.note.findFirst({
+        where: { targetType: 'USER_PROFILE_EXTRA', targetId: userId },
+      });
+      if (existingNote?.content) {
+        existingExtraDb = JSON.parse(existingNote.content);
+      }
+    } catch (_) {}
+
+    const extrasToSave = {
+      ...existingExtraDb,
       ...(profileExtras[userId] || {}),
-      city: data.city !== undefined ? data.city : (profileExtras[userId]?.city || ''),
-      state: data.state !== undefined ? data.state : (profileExtras[userId]?.state || ''),
-      country: data.country !== undefined ? data.country : (profileExtras[userId]?.country || ''),
-      companyName: data.companyName || profileExtras[userId]?.companyName || updatedUser.company?.name || '',
-      companyDetails: data.companyDetails !== undefined ? data.companyDetails : (profileExtras[userId]?.companyDetails || ''),
-      profilePictureUrl: data.profilePictureUrl !== undefined ? data.profilePictureUrl : profileExtras[userId]?.profilePictureUrl,
+      city: data.city !== undefined ? data.city : (existingExtraDb.city || profileExtras[userId]?.city || ''),
+      state: data.state !== undefined ? data.state : (existingExtraDb.state || profileExtras[userId]?.state || ''),
+      country: data.country !== undefined ? data.country : (existingExtraDb.country || profileExtras[userId]?.country || ''),
+      profilePictureUrl: finalPhotoUrl !== undefined ? finalPhotoUrl : (existingExtraDb.profilePictureUrl || profileExtras[userId]?.profilePictureUrl || null),
     };
+
+    // Persist to PostgreSQL Note table
+    try {
+      if (existingNote) {
+        await prisma.note.update({
+          where: { id: existingNote.id },
+          data: { content: JSON.stringify(extrasToSave) },
+        });
+      } else {
+        await prisma.note.create({
+          data: {
+            authorId: userId,
+            targetType: 'USER_PROFILE_EXTRA',
+            targetId: userId,
+            title: 'User Profile Extra',
+            content: JSON.stringify(extrasToSave),
+          },
+        });
+      }
+    } catch (dbErr: any) {
+      console.warn('Note extras database persistence notice:', dbErr?.message);
+    }
+
+    profileExtras[userId] = extrasToSave;
 
     const fullName = `${updatedUser.firstName || ''} ${updatedUser.lastName || ''}`.trim();
     return {
@@ -233,12 +294,11 @@ export class AuthService {
       name: fullName || updatedUser.email.split('@')[0],
       phone: updatedUser.phone || '',
       role: updatedUser.role,
-      city: profileExtras[userId].city,
-      state: profileExtras[userId].state,
-      country: profileExtras[userId].country,
-      companyName: profileExtras[userId].companyName,
-      companyDetails: profileExtras[userId].companyDetails,
-      profilePictureUrl: profileExtras[userId].profilePictureUrl || null,
+      city: extrasToSave.city,
+      state: extrasToSave.state,
+      country: extrasToSave.country,
+      companyName: updatedUser.company?.name || '',
+      profilePictureUrl: extrasToSave.profilePictureUrl || null,
     };
   }
 }

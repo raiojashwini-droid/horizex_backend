@@ -626,8 +626,24 @@ export class AccountingService {
 
     // 1. Fetch real rent payment deposits (CREDITS)
     const paymentWhere: any = {
-      bankAccountId: account.id,
       status: 'COMPLETED',
+      OR: [
+        { bankAccountId: account.id },
+        ...(account.companyId
+          ? [
+              {
+                bankAccountId: null,
+                invoice: {
+                  lease: {
+                    unit: {
+                      property: { companyId: account.companyId },
+                    },
+                  },
+                },
+              },
+            ]
+          : []),
+      ],
     };
 
     if (buildingId) {
@@ -773,6 +789,21 @@ export class AccountingService {
         runningBalance += tx.amount;
       }
     });
+
+    // If there is opening balance or zero previous transactions, record opening balance entry
+    if (runningBalance > 0 || (transactions.length === 0 && currentBalance > 0)) {
+      const openAmt = Math.round((runningBalance > 0 ? runningBalance : currentBalance) * 100) / 100;
+      transactions.push({
+        id: `INIT-${account.id}`,
+        date: account.createdAt.toISOString().split('T')[0],
+        description: `Opening Balance / Initial Deposit`,
+        reference: `INIT-${(account.accountNumber || '0001').slice(-4)}`,
+        category: 'Opening Balance',
+        type: 'CREDIT',
+        amount: openAmt,
+        balance: openAmt,
+      });
+    }
 
     const totalCredits = transactions
       .filter((t) => t.type === 'CREDIT')

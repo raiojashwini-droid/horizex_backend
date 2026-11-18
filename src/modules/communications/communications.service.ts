@@ -1,6 +1,7 @@
 import { prisma } from '../../config/db';
 import { AppError } from '../../middlewares/errorHandler';
 import { createAuditLog } from '../../utils/auditLogger.util';
+import { emitToConversation, emitGlobal } from '../../config/socket';
 import crypto from 'crypto';
 
 export interface SMSTemplate {
@@ -599,7 +600,7 @@ export class CommunicationsService {
         const unitNumber = meta.unitNumber || activeLease?.unit?.unitNumber || null;
 
         // If buildingId filter is provided, skip non-matching tenants
-        if (buildingId && propertyId && propertyId !== buildingId) {
+        if (buildingId && propertyId !== buildingId) {
           continue;
         }
 
@@ -822,6 +823,7 @@ export class CommunicationsService {
             smsStatus: 'delivered',
             isRead: m.subject !== 'ADMIN_MSG:UNREAD',
             isReadByAdmin: true,
+            isMe: isFromTenant,
           };
         });
       }
@@ -829,12 +831,12 @@ export class CommunicationsService {
       return [];
     }
 
-    // 1. Check if target is a User (Owner or Coworker)
+    // 1. Check if target is a User
     let targetUser: any = null;
     try {
       targetUser = await prisma.user.findUnique({
         where: { id: cleanId },
-        select: { id: true, role: true },
+        select: { id: true, role: true, email: true },
       });
     } catch (e) {
       // ignore
@@ -866,6 +868,7 @@ export class CommunicationsService {
           direction: m.authorId === currentUserId ? 'OUTBOUND' : 'INBOUND',
           smsStatus: 'delivered',
           isReadByAdmin: true,
+          isMe: m.authorId === currentUserId,
         }));
       }
     }
@@ -894,13 +897,32 @@ export class CommunicationsService {
         direction: m.authorId === currentUserId ? 'OUTBOUND' : 'INBOUND',
         smsStatus: 'delivered',
         isReadByAdmin: true,
+        isMe: m.authorId === currentUserId,
       }));
     }
 
-    // 2. Default: Tenant messages (cleanId is Tenant ID)
+    // 2. Default: Tenant messages
+    // Resolve tenant ID accurately whether cleanId is Tenant ID or Tenant's User ID
+    let tenantRecipientId = cleanId;
+    const directTenant = await prisma.tenant.findUnique({ where: { id: cleanId }, select: { id: true } });
+    if (!directTenant) {
+      const tenantByUser = await prisma.tenant.findFirst({
+        where: {
+          OR: [
+            { id: cleanId },
+            { email: { equals: targetUser?.email, mode: 'insensitive' } },
+          ],
+        },
+        select: { id: true },
+      });
+      if (tenantByUser) {
+        tenantRecipientId = tenantByUser.id;
+      }
+    }
+
     const messages = await prisma.communicationMessage.findMany({
       where: {
-        recipientId: cleanId,
+        recipientId: tenantRecipientId,
       },
       orderBy: { sentAt: 'asc' },
     });
@@ -908,7 +930,7 @@ export class CommunicationsService {
     // Mark tenant's unread messages as read by admin
     await prisma.communicationMessage.updateMany({
       where: {
-        recipientId: cleanId,
+        recipientId: tenantRecipientId,
         subject: { in: ['TENANT_INBOUND:UNREAD', 'TENANT_MSG:UNREAD'] },
       },
       data: {
@@ -917,11 +939,11 @@ export class CommunicationsService {
     });
 
     return messages.map((m) => {
-      const isFromAdmin = m.senderId === currentUserId || (!m.subject?.startsWith('TENANT_') && m.senderId !== cleanId);
+      const isFromAdmin = m.senderId === currentUserId || (!m.subject?.startsWith('TENANT_') && m.senderId !== tenantRecipientId);
       return {
         id: m.id,
-        senderId: isFromAdmin ? currentUserId : cleanId,
-        receiverId: isFromAdmin ? cleanId : currentUserId,
+        senderId: isFromAdmin ? (currentUserId || 'admin') : tenantRecipientId,
+        receiverId: isFromAdmin ? tenantRecipientId : (currentUserId || 'admin'),
         content: m.message,
         message: m.message,
         createdAt: new Date(m.sentAt).toISOString(),
@@ -929,6 +951,7 @@ export class CommunicationsService {
         direction: isFromAdmin ? 'OUTBOUND' : 'INBOUND',
         smsStatus: 'delivered',
         isReadByAdmin: true,
+        isMe: isFromAdmin,
       };
     });
   }
@@ -945,7 +968,7 @@ export class CommunicationsService {
     senderUserId?: string
   ) {
     const rawTarget = data.recipientId || data.receiverId;
-    const bodyText = data.message || data.content;
+    const bodyText = (data.message || data.content || '').trim();
 
     if (!rawTarget) {
       throw new AppError('Recipient ID is required', 400, 'RECIPIENT_REQUIRED');
@@ -999,21 +1022,159 @@ export class CommunicationsService {
         newData: comm,
       });
 
-      return {
+      const messageObj = {
         id: comm.id,
         senderId: authorId,
+        recipientId: senderTenant.id,
+        receiverId: senderTenant.id,
+        content: comm.message,
+        message: comm.message,
+        createdAt: new Date(comm.sentAt).toISOString(),
+        sentAt: new Date(comm.sentAt).toISOString(),
+        direction: 'INBOUND',
+        smsStatus: 'delivered',
+        isMe: true,
+      };
+
+      // Real-time broadcast
+      emitToConversation(senderTenant.id, 'new_message', messageObj);
+      emitGlobal('conversation_updated', {
+        id: senderTenant.id,
+        lastMessage: {
+          content: comm.message,
+          createdAt: new Date(comm.sentAt).toISOString(),
+        },
+        unreadCountDelta: 1,
+      });
+
+      return messageObj;
+    }
+
+    // 0.1 Check if sender is an OWNER (sending message to Admin / Property Support)
+    let isSenderOwner = false;
+    if (senderUserId) {
+      const senderUser = await prisma.user.findUnique({
+        where: { id: senderUserId },
+        select: { id: true, role: true },
+      });
+      if (senderUser && senderUser.role === 'OWNER') {
+        isSenderOwner = true;
+      }
+    }
+
+    if (isSenderOwner) {
+      const ownerId = senderUserId!;
+      const note = await prisma.note.create({
+        data: {
+          authorId: ownerId,
+          targetType: 'OWNER_CHAT',
+          targetId: ownerId,
+          title: 'Owner Support Chat',
+          content: bodyText,
+        },
+      });
+
+      const noteObj = {
+        id: note.id,
+        senderId: ownerId,
         recipientId: targetId,
         receiverId: targetId,
+        content: note.content,
+        message: note.content,
+        createdAt: new Date(note.createdAt).toISOString(),
+        sentAt: new Date(note.createdAt).toISOString(),
+        direction: 'INBOUND',
+        smsStatus: 'delivered',
+        isMe: true,
+      };
+
+      // Real-time broadcast to owner's conversation room and admin global channel
+      emitToConversation(ownerId, 'new_message', noteObj);
+      emitGlobal('conversation_updated', {
+        id: ownerId,
+        lastMessage: {
+          content: note.content,
+          createdAt: new Date(note.createdAt).toISOString(),
+        },
+        unreadCountDelta: 1,
+      });
+
+      return noteObj;
+    }
+
+    // 1. Check if target is a Tenant (or a user with role TENANT)
+    let targetTenant = await prisma.tenant.findUnique({
+      where: { id: targetId },
+      select: { id: true, firstName: true, lastName: true, email: true },
+    });
+
+    if (!targetTenant) {
+      // Check if targetId is a User with role TENANT
+      const potentialTenantUser = await prisma.user.findUnique({
+        where: { id: targetId },
+        select: { id: true, email: true, role: true },
+      });
+      if (potentialTenantUser && potentialTenantUser.role === 'TENANT') {
+        targetTenant = await prisma.tenant.findFirst({
+          where: {
+            OR: [
+              { id: potentialTenantUser.id },
+              { email: { equals: potentialTenantUser.email, mode: 'insensitive' } },
+            ],
+          },
+          select: { id: true, firstName: true, lastName: true, email: true },
+        });
+      }
+    }
+
+    // IF TARGET IS A TENANT, ALWAYS SAVE TO CommunicationMessage!
+    if (targetTenant) {
+      const comm = await prisma.communicationMessage.create({
+        data: {
+          senderId: authorId,
+          recipientId: targetTenant.id,
+          channel: data.channel || 'SMS',
+          subject: 'ADMIN_MSG:UNREAD',
+          message: bodyText,
+        },
+      });
+
+      await createAuditLog({
+        userId: senderUserId,
+        action: 'SEND_COMMUNICATION',
+        entityType: 'CommunicationMessage',
+        entityId: comm.id,
+        newData: comm,
+      });
+
+      const messageObj = {
+        id: comm.id,
+        senderId: authorId,
+        recipientId: targetTenant.id,
+        receiverId: targetTenant.id,
         content: comm.message,
         message: comm.message,
         createdAt: new Date(comm.sentAt).toISOString(),
         sentAt: new Date(comm.sentAt).toISOString(),
         direction: 'OUTBOUND',
         smsStatus: 'delivered',
+        isMe: true,
       };
+
+      // Real-time broadcast to tenant and inbox
+      emitToConversation(targetTenant.id, 'new_message', messageObj);
+      emitGlobal('conversation_updated', {
+        id: targetTenant.id,
+        lastMessage: {
+          content: comm.message,
+          createdAt: new Date(comm.sentAt).toISOString(),
+        },
+      });
+
+      return messageObj;
     }
 
-    // 1. Check if recipient is a User (Owner or Team Member)
+    // 2. Check if recipient is a User (Owner or Coworker)
     let targetUser: any = null;
     try {
       targetUser = await prisma.user.findUnique({
@@ -1038,7 +1199,7 @@ export class CommunicationsService {
         },
       });
 
-      return {
+      const noteObj = {
         id: note.id,
         senderId: note.authorId,
         recipientId: targetId,
@@ -1049,10 +1210,22 @@ export class CommunicationsService {
         sentAt: new Date(note.createdAt).toISOString(),
         direction: 'OUTBOUND',
         smsStatus: 'delivered',
+        isMe: true,
       };
+
+      emitToConversation(targetId, 'new_message', noteObj);
+      emitGlobal('conversation_updated', {
+        id: targetId,
+        lastMessage: {
+          content: note.content,
+          createdAt: new Date(note.createdAt).toISOString(),
+        },
+      });
+
+      return noteObj;
     }
 
-    // 2. Otherwise send as CommunicationMessage to Tenant (targetId is Tenant ID)
+    // 3. Fallback: Save as CommunicationMessage
     const comm = await prisma.communicationMessage.create({
       data: {
         senderId: authorId,
@@ -1071,7 +1244,7 @@ export class CommunicationsService {
       newData: comm,
     });
 
-    return {
+    const fallbackObj = {
       id: comm.id,
       senderId: comm.senderId,
       recipientId: comm.recipientId,
@@ -1082,7 +1255,11 @@ export class CommunicationsService {
       sentAt: new Date(comm.sentAt).toISOString(),
       direction: 'OUTBOUND',
       smsStatus: 'delivered',
+      isMe: true,
     };
+
+    emitToConversation(targetId, 'new_message', fallbackObj);
+    return fallbackObj;
   }
 
   static async markAsRead(targetId?: string | number) {

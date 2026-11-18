@@ -1,6 +1,8 @@
+import http from 'http';
 import app from './app';
 import { env } from './config/env';
 import { prisma } from './config/db';
+import { initSocket } from './config/socket';
 
 const PORT = parseInt(env.PORT, 10) || 5000;
 
@@ -11,10 +13,14 @@ async function bootstrap() {
     await prisma.$connect();
     console.log('✅ PostgreSQL connection established successfully.');
 
-    const server = app.listen(PORT, () => {
+    const httpServer = http.createServer(app);
+    initSocket(httpServer);
+
+    const server = httpServer.listen(PORT, () => {
       console.log(`🚀 Horizex Property Pro API running at http://localhost:${PORT}/api`);
       console.log(`🛡️  Environment: ${env.NODE_ENV}`);
       console.log(`🌐 CORS Whitelist: ${env.CORS_ORIGIN}`);
+      console.log(`⚡ WebSocket / Socket.io server initialized.`);
     });
 
     // Graceful Shutdown
