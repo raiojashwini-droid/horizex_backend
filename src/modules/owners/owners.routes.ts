@@ -104,7 +104,7 @@ router.put(
   async (req: Request, res: Response) => {
     try {
       const { id } = req.params;
-      const { firstName, lastName, email, phone } = req.body;
+      const { firstName, lastName, email, phone, password } = req.body;
 
       const user = await prisma.user.update({
         where: { id },
@@ -113,6 +113,7 @@ router.put(
           ...(lastName && { lastName }),
           ...(email && { email }),
           ...(phone !== undefined && { phone }),
+          ...(password && { passwordHash: await bcrypt.hash(password, 10) }),
         },
       });
 
