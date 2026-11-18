@@ -581,17 +581,21 @@ router.get('/documents', async (req: Request, res: Response) => {
       orderBy: { createdAt: 'desc' }
     });
 
-    const formatted = dbDocs.map(d => ({
-      id: d.id,
-      name: d.name,
-      type: d.type || 'Document',
-      date: d.createdAt.toISOString().split('T')[0],
-      expiryDate: d.expiryDate,
-      fileUrl: d.fileUrl || `/api/tenant/documents/${d.id}/download`,
-      url: d.fileUrl || `/api/tenant/documents/${d.id}/download`
-    }));
+    const formatted = dbDocs.map(d => {
+      const isCloudinary = d.fileUrl && d.fileUrl.startsWith('http');
+      const docUrl = isCloudinary ? d.fileUrl : `/api/tenant/documents/${d.id}/download`;
+      return {
+        id: d.id,
+        name: d.name,
+        type: d.type || 'Document',
+        date: d.createdAt.toISOString().split('T')[0],
+        expiryDate: d.expiryDate,
+        fileUrl: docUrl,
+        url: docUrl
+      };
+    });
 
-    // If no custom documents yet, generate real baseline Lease Agreement document
+    // If no custom documents yet, generate real baseline Lease Agreement document ONLY if active lease exists
     if (formatted.length === 0 && activeLease) {
       formatted.push({
         id: `lease-${activeLease.id.slice(0, 8)}`,
@@ -617,6 +621,7 @@ router.get('/documents/:id/download', async (req: Request, res: Response) => {
     const activeLease = tenant?.leases?.[0];
 
     const docId = req.params.id;
+    const disposition = (req.query.disposition as string) === 'inline' ? 'inline' : 'attachment';
 
     if (docId.startsWith('lease-')) {
       // Generate official lease agreement document text
@@ -626,17 +631,17 @@ HORIZEX REAL ESTATE - OFFICIAL LEASE AGREEMENT
 Agreement ID:  ${activeLease?.id || 'AGR-DEMO-001'}
 Tenant Name:   ${tenant.firstName} ${tenant.lastName}
 Tenant Email:  ${tenant.email}
-Property:      ${activeLease?.unit?.property?.name || 'Le Mirage Condominiums & Suites'}
-Unit Number:   ${activeLease?.unit?.unitNumber || '101'}
-Lease Term:    ${activeLease?.startDate ? new Date(activeLease.startDate).toLocaleDateString() : '2026-01-01'} to ${activeLease?.endDate ? new Date(activeLease.endDate).toLocaleDateString() : '2027-12-31'}
-Monthly Rent:  $${Number(activeLease?.rentAmount || 1250).toFixed(2)}
-Deposit:       $${Number(activeLease?.depositAmount || 1250).toFixed(2)}
+Property:      ${activeLease?.unit?.property?.name || 'Property'}
+Unit Number:   ${activeLease?.unit?.unitNumber || 'N/A'}
+Lease Term:    ${activeLease?.startDate ? new Date(activeLease.startDate).toLocaleDateString() : 'N/A'} to ${activeLease?.endDate ? new Date(activeLease.endDate).toLocaleDateString() : 'N/A'}
+Monthly Rent:  $${Number(activeLease?.rentAmount || 0).toFixed(2)}
+Deposit:       $${Number(activeLease?.depositAmount || 0).toFixed(2)}
 Status:        ${activeLease?.status || 'ACTIVE'}
 ===================================================
 Executed electronically. Verified by Horizex Property Management.
 `;
       res.setHeader('Content-Type', 'text/plain');
-      res.setHeader('Content-Disposition', `attachment; filename=Lease_Agreement_Unit_${activeLease?.unit?.unitNumber || '101'}.txt`);
+      res.setHeader('Content-Disposition', `${disposition}; filename=Lease_Agreement_Unit_${activeLease?.unit?.unitNumber || 'N/A'}.txt`);
       return res.send(content);
     }
 
@@ -661,7 +666,7 @@ Executed electronically. Verified by Horizex Property Management.
         const mime = matches[1];
         const buffer = Buffer.from(matches[2], 'base64');
         res.setHeader('Content-Type', mime);
-        res.setHeader('Content-Disposition', `attachment; filename=${doc.name || 'document.pdf'}`);
+        res.setHeader('Content-Disposition', `${disposition}; filename=${encodeURIComponent(doc.name || 'document.pdf')}`);
         return res.send(buffer);
       }
     }
@@ -678,7 +683,7 @@ router.post('/documents', async (req: Request, res: Response) => {
     if (!tenant) return res.status(404).json({ message: 'Tenant not found' });
     const activeLease = tenant?.leases?.[0];
 
-    const { name, type, fileUrl, fileName, expiryDate } = req.body;
+    const { name, type, fileUrl, fileName, fileSize, expiryDate } = req.body;
 
     let finalFileUrl = fileUrl || null;
     if (finalFileUrl && typeof finalFileUrl === 'string' && finalFileUrl.startsWith('data:')) {
@@ -695,7 +700,8 @@ router.post('/documents', async (req: Request, res: Response) => {
         name: name || fileName || 'Tenant_Document.pdf',
         type: type || 'General Document',
         fileUrl: finalFileUrl,
-        mimeType: fileName?.endsWith('.png') ? 'image/png' : (fileName?.endsWith('.jpg') ? 'image/jpeg' : 'application/pdf'),
+        fileSize: fileSize || '1.0 MB',
+        mimeType: fileName?.endsWith('.png') ? 'image/png' : (fileName?.endsWith('.jpg') || fileName?.endsWith('.jpeg') ? 'image/jpeg' : 'application/pdf'),
         expiryDate: expiryDate ? new Date(expiryDate) : null,
         companyId: tenant.companyId,
         propertyId: activeLease?.unit?.propertyId || null,
@@ -706,10 +712,21 @@ router.post('/documents', async (req: Request, res: Response) => {
       }
     });
 
+    const isCloudinary = doc.fileUrl && doc.fileUrl.startsWith('http');
+    const docUrl = isCloudinary ? doc.fileUrl : `/api/tenant/documents/${doc.id}/download`;
+
     return res.status(201).json({
       success: true,
       message: 'Document uploaded successfully',
-      data: doc
+      data: {
+        id: doc.id,
+        name: doc.name,
+        type: doc.type,
+        date: doc.createdAt.toISOString().split('T')[0],
+        expiryDate: doc.expiryDate,
+        fileUrl: docUrl,
+        url: docUrl
+      }
     });
   } catch (err: any) {
     return res.status(500).json({ message: err.message });
