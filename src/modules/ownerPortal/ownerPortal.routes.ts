@@ -786,7 +786,13 @@ router.get('/reports', async (req: Request, res: Response) => {
 router.get('/reports/rent-roll', async (req: Request, res: Response) => {
   try {
     const isSuperOrAdmin = req.user?.role === 'ADMIN' || req.user?.role === 'SUPER_ADMIN';
-    const targetOwnerId = (isSuperOrAdmin && req.query.ownerId) ? String(req.query.ownerId) : req.user?.userId;
+    let targetOwnerId = (isSuperOrAdmin && req.query.ownerId) ? String(req.query.ownerId) : req.user?.userId;
+    if (!targetOwnerId && req.headers['x-owner-id']) {
+      targetOwnerId = String(req.headers['x-owner-id']);
+    }
+    if (isSuperOrAdmin && !req.query.ownerId && req.headers['x-owner-id']) {
+      targetOwnerId = String(req.headers['x-owner-id']);
+    }
     const buildingId = (req.query.buildingId as string) || (req.query.propertyId as string);
 
     const data = await RentRollService.getRentRollData({
