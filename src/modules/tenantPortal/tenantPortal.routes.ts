@@ -16,7 +16,7 @@ async function getTenantFromUser(userId?: string) {
   return prisma.tenant.findFirst({
     where: {
       OR: [
-        { email: user.email },
+        { email: { equals: user.email, mode: 'insensitive' } },
         { id: user.id }
       ]
     },
@@ -69,62 +69,118 @@ router.get('/profile', async (req: Request, res: Response) => {
 router.get('/dashboard', async (req: Request, res: Response) => {
   try {
     const tenant = await getTenantFromUser(req.user?.userId);
-    const activeLease = tenant?.leases?.[0];
+    const tenantUser = req.user?.userId
+      ? await prisma.user.findUnique({
+          where: { id: req.user.userId },
+          select: { firstName: true, lastName: true, email: true },
+        })
+      : null;
 
-    const invoices = tenant ? await prisma.invoice.findMany({
-      where: { tenantId: tenant.id },
-      orderBy: { dueDate: 'desc' }
-    }) : [];
+    const tenantName = tenant
+      ? `${tenant.firstName} ${tenant.lastName}`.trim()
+      : (tenantUser ? `${tenantUser.firstName} ${tenantUser.lastName}`.trim() : 'Tenant');
 
-    const openInvoices = invoices.filter(inv => inv.status !== 'PAID');
-    const latestInvoice = invoices[0];
+    const activeLease = tenant?.leases?.find((l: any) => l.status === 'ACTIVE') || tenant?.leases?.[0];
 
-    const openTicketsCount = tenant ? await prisma.maintenanceTicket.count({
-      where: {
-        tenantId: tenant.id,
-        status: { notIn: ['CLOSED', 'RESOLVED'] }
+    const invoices = tenant
+      ? await prisma.invoice.findMany({
+          where: { tenantId: tenant.id },
+          orderBy: { dueDate: 'desc' },
+        })
+      : [];
+
+    const openInvoices = invoices.filter((inv) => inv.status !== 'PAID');
+
+    const openTicketsCount = tenant
+      ? await prisma.maintenanceTicket.count({
+          where: {
+            tenantId: tenant.id,
+            status: { notIn: ['CLOSED', 'RESOLVED'] },
+          },
+        })
+      : 0;
+
+    const recentTickets = tenant
+      ? await prisma.maintenanceTicket.findMany({
+          where: { tenantId: tenant.id },
+          orderBy: { createdAt: 'desc' },
+          take: 3,
+          select: {
+            id: true,
+            title: true,
+            status: true,
+            priority: true,
+            createdAt: true,
+          },
+        })
+      : [];
+
+    const vehicleCount = tenant
+      ? await prisma.vehicle.count({
+          where: { tenantId: tenant.id },
+        })
+      : 0;
+
+    const unreadMessagesCount = tenant
+      ? await prisma.communicationMessage.count({
+          where: { recipientId: tenant.id },
+        })
+      : 0;
+
+    // Dynamic calculations based strictly on real database records
+    let currentRent = 0;
+    let rentDueStatus = 'None';
+    let nextDueDate: string | null = null;
+
+    if (activeLease) {
+      currentRent = Number(activeLease.rentAmount || 0);
+      if (openInvoices.length > 0) {
+        const hasOverdue = openInvoices.some((inv) => new Date(inv.dueDate) < new Date());
+        rentDueStatus = hasOverdue ? 'Overdue' : 'Due Soon';
+        nextDueDate = openInvoices[0].dueDate ? new Date(openInvoices[0].dueDate).toISOString() : null;
+      } else {
+        rentDueStatus = 'Paid';
+        // Next upcoming cycle (e.g., 1st of upcoming month) if lease is ongoing
+        const now = new Date();
+        const nextMonth = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+        if (new Date(activeLease.endDate) >= nextMonth) {
+          nextDueDate = nextMonth.toISOString();
+        } else {
+          nextDueDate = null;
+        }
       }
-    }) : 0;
-
-    const recentTickets = tenant ? await prisma.maintenanceTicket.findMany({
-      where: { tenantId: tenant.id },
-      orderBy: { createdAt: 'desc' },
-      take: 3,
-      select: {
-        id: true,
-        title: true,
-        status: true,
-        priority: true,
-        createdAt: true
-      }
-    }) : [];
-
-    const vehicleCount = tenant ? await prisma.vehicle.count({
-      where: { tenantId: tenant.id }
-    }) : 0;
-
-    const rentAmount = activeLease ? Number(activeLease.rentAmount) : (invoices[0] ? Number(invoices[0].amountDue) : 1250);
+    } else if (openInvoices.length > 0) {
+      currentRent = openInvoices.reduce((sum, inv) => sum + Number(inv.amountDue || 0), 0);
+      const hasOverdue = openInvoices.some((inv) => new Date(inv.dueDate) < new Date());
+      rentDueStatus = hasOverdue ? 'Overdue' : 'Due Soon';
+      nextDueDate = openInvoices[0].dueDate ? new Date(openInvoices[0].dueDate).toISOString() : null;
+    } else {
+      currentRent = 0;
+      rentDueStatus = 'None';
+      nextDueDate = null;
+    }
 
     return res.json({
-      tenantName: tenant ? `${tenant.firstName} ${tenant.lastName}`.trim() : 'Tenant User',
+      tenantName,
       stats: {
-        currentRent: rentAmount,
-        rentDueStatus: openInvoices.length === 0 ? 'Paid' : (new Date(openInvoices[0].dueDate) < new Date() ? 'Overdue' : 'Due Soon'),
-        leaseStatus: activeLease?.status || 'ACTIVE',
-        leaseExpiry: activeLease?.endDate || '2027-12-31',
+        currentRent,
+        rentDueStatus,
+        leaseStatus: activeLease?.status || 'None',
+        leaseExpiry: activeLease?.endDate ? new Date(activeLease.endDate).toISOString() : null,
         openTickets: openTicketsCount,
-        recentTickets: recentTickets.map(t => ({
+        recentTickets: recentTickets.map((t) => ({
           id: t.id,
+          title: t.title,
           subject: t.title,
-          status: t.status === 'RESOLVED' ? 'Resolved' : (t.status === 'IN_PROGRESS' ? 'In Progress' : 'Pending'),
+          status: t.status === 'RESOLVED' ? 'Resolved' : t.status === 'IN_PROGRESS' ? 'In Progress' : 'Pending',
           priority: t.priority,
-          date: t.createdAt
+          date: t.createdAt,
         })),
         vehicleCount,
         unauthorizedVehicles: 0,
-        nextDueDate: openInvoices[0]?.dueDate || latestInvoice?.dueDate || new Date().toISOString(),
-        unreadCount: 0
-      }
+        nextDueDate,
+        unreadCount: unreadMessagesCount,
+      },
     });
   } catch (err: any) {
     return res.status(500).json({ message: err.message });
