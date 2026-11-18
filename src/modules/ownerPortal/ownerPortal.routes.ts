@@ -147,10 +147,20 @@ router.get('/dashboard/stats', async (req: Request, res: Response) => {
     // Count vacant bedrooms
     let vacantBedrooms = 0;
     const vacantBedroomsList: string[] = [];
-    vacantUnitsList.forEach((u) => {
+    units.forEach((u) => {
       const beds = Number(u.bedrooms || 1);
-      vacantBedrooms += beds;
-      vacantBedroomsList.push(`${u.property?.name || 'Property'} - Unit ${u.unitNumber} (${beds} bed)`);
+      const isBedroomWise = u.rentalMode === 'BEDROOM_WISE' || u.leases.some((l) => l.leaseType === 'Bedroom Lease' || !!l.bedroomId);
+      if (isBedroomWise) {
+        const occBeds = Math.min(u.leases.length, beds);
+        const vacBeds = Math.max(0, beds - occBeds);
+        vacantBedrooms += vacBeds;
+        if (vacBeds > 0) {
+          vacantBedroomsList.push(`${u.property?.name || 'Property'} - Unit ${u.unitNumber} (${vacBeds} bed${vacBeds > 1 ? 's' : ''} vacant)`);
+        }
+      } else if (u.leases.length === 0 && u.status !== 'OCCUPIED') {
+        vacantBedrooms += beds;
+        vacantBedroomsList.push(`${u.property?.name || 'Property'} - Unit ${u.unitNumber} (${beds} bed${beds > 1 ? 's' : ''})`);
+      }
     });
 
     // Insurance expiring soon (within 60 days)
@@ -695,14 +705,27 @@ router.get('/properties', async (req: Request, res: Response) => {
 
       p.units.forEach((u) => {
         const beds = Number(u.bedrooms || 1);
-        if (u.leases.length > 0) {
+        const isBedroomWise = u.rentalMode === 'BEDROOM_WISE' || u.leases.some((l) => l.leaseType === 'Bedroom Lease' || !!l.bedroomId);
+
+        if (isBedroomWise) {
+          const occBeds = Math.min(u.leases.length, beds);
+          const vacBeds = Math.max(0, beds - occBeds);
+          occupiedBedrooms += occBeds;
+          vacantBedrooms += vacBeds;
           activeTenants += u.leases.length;
-          occupiedBedrooms += beds;
           u.leases.forEach((l) => {
             monthlyRevenue += Number(l.rentAmount || 0);
           });
         } else {
-          vacantBedrooms += beds;
+          if (u.leases.length > 0 || u.status === 'OCCUPIED') {
+            occupiedBedrooms += beds;
+            activeTenants += u.leases.length;
+            u.leases.forEach((l) => {
+              monthlyRevenue += Number(l.rentAmount || 0);
+            });
+          } else {
+            vacantBedrooms += beds;
+          }
         }
       });
 
@@ -717,7 +740,7 @@ router.get('/properties', async (req: Request, res: Response) => {
         occupancy: occupancyRate,
         status: p.isActive ? 'Active' : 'Inactive',
         revenue: monthlyRevenue,
-        projectedAnnual: projectedAnnual > 0 ? projectedAnnual : 180000,
+        projectedAnnual,
         nextPaymentDate: nextPaymentDateStr,
         residentialCount: totalUnits,
         commercialCount: 0,
