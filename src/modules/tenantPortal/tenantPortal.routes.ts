@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express';
 import { prisma } from '../../config/db';
 import { authenticate } from '../../middlewares/auth.middleware';
 import { uploadBase64Image } from '../../config/cloudinary';
+import { emitToConversation, emitGlobal } from '../../config/socket';
 import crypto from 'crypto';
 
 const router = Router();
@@ -11,13 +12,13 @@ router.use(authenticate);
 async function getTenantFromUser(userId?: string) {
   if (!userId) return null;
   const user = await prisma.user.findUnique({ where: { id: userId } });
-  if (!user) return null;
 
   return prisma.tenant.findFirst({
     where: {
       OR: [
-        { email: { equals: user.email, mode: 'insensitive' } },
-        { id: user.id }
+        ...(user?.email ? [{ email: { equals: user.email, mode: 'insensitive' as const } }] : []),
+        { id: userId },
+        ...(user?.id ? [{ id: user.id }] : [])
       ]
     },
     include: {
@@ -649,7 +650,7 @@ router.get('/vehicles', async (req: Request, res: Response) => {
         unitNumber: v.unit?.unitNumber || activeLease?.unit?.unitNumber || '-',
         buildingName: v.unit?.property?.name || activeLease?.unit?.property?.name || 'Horizex Property',
         isAuthorized,
-        status: isAuthorized ? 'Authorized' : 'Not Authorized',
+        status: isAuthorized ? 'Authorized' : 'Unauthorized',
         issue: isAuthorized ? null : 'Lease Expired',
         createdAt: v.createdAt,
       };
@@ -1425,16 +1426,37 @@ router.post('/messages', async (req: Request, res: Response) => {
       }
     });
 
-    return res.status(201).json({
+    const responsePayload = {
       id: comm.id,
       senderId: userId || 'me',
       recipientId: tenant.id,
+      receiverId: tenant.id,
       content: comm.message,
       message: comm.message,
       createdAt: new Date(comm.sentAt).toISOString(),
+      sentAt: new Date(comm.sentAt).toISOString(),
       direction: 'OUTBOUND',
       isMe: true,
+      smsStatus: 'delivered',
+    };
+
+    // Broadcast to room for Admin and any other open screens
+    emitToConversation(tenant.id, 'new_message', {
+      ...responsePayload,
+      direction: 'INBOUND', // For the Admin watching this thread
+      isMe: false,          // For the Admin watching this thread
     });
+
+    emitGlobal('conversation_updated', {
+      id: tenant.id,
+      lastMessage: {
+        content: comm.message,
+        createdAt: new Date(comm.sentAt).toISOString(),
+      },
+      unreadCountDelta: 1,
+    });
+
+    return res.status(201).json(responsePayload);
   } catch (err: any) {
     return res.status(500).json({ message: err.message });
   }

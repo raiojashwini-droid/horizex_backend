@@ -485,8 +485,8 @@ export class TenantsService {
             lastName: true,
             phone: true,
             leases: {
-              where: { status: 'ACTIVE', isActive: true },
-              select: { id: true, endDate: true },
+              select: { id: true, endDate: true, status: true, isActive: true },
+              orderBy: { endDate: 'desc' },
               take: 1,
             },
           },
@@ -502,9 +502,36 @@ export class TenantsService {
       orderBy: { createdAt: 'desc' },
     });
 
+    const now = new Date();
     const result = vehicles.map((v) => {
-      const activeLease = v.tenant?.leases?.[0];
-      const isAuthorized = !!activeLease;
+      const latestLease = v.tenant?.leases?.[0];
+      const isLeaseExpired =
+        !latestLease ||
+        latestLease.status === 'EXPIRED' ||
+        latestLease.status === 'TERMINATED' ||
+        !latestLease.isActive ||
+        (latestLease.endDate && new Date(latestLease.endDate).getTime() < now.getTime());
+
+      const isAuthorized = !isLeaseExpired;
+      const leaseExpiry = latestLease?.endDate
+        ? new Date(latestLease.endDate).toLocaleDateString()
+        : 'Expired';
+
+      // Auto-sync lease status to EXPIRED in database asynchronously if it passed endDate
+      if (
+        latestLease &&
+        latestLease.status === 'ACTIVE' &&
+        latestLease.endDate &&
+        new Date(latestLease.endDate).getTime() < now.getTime()
+      ) {
+        prisma.lease
+          .update({
+            where: { id: latestLease.id },
+            data: { status: 'EXPIRED' },
+          })
+          .catch(() => {});
+      }
+
       return {
         id: v.id,
         tenantId: v.tenantId,
@@ -521,7 +548,9 @@ export class TenantsService {
         buildingName: v.unit?.property?.name || 'Main Building',
         unitNumber: v.unit?.unitNumber || '-',
         isAuthorized,
-        leaseExpiry: activeLease?.endDate ? new Date(activeLease.endDate).toLocaleDateString() : 'Expired',
+        status: isAuthorized ? 'AUTHORIZED' : 'UNAUTHORIZED',
+        leaseExpiry,
+        isLeaseExpired,
         tenant: v.tenant,
         unit: v.unit,
       };
