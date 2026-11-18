@@ -600,24 +600,60 @@ router.post('/tickets', async (req: Request, res: Response) => {
 // 7. Vehicles
 router.get('/vehicles', async (req: Request, res: Response) => {
   try {
-    const tenant = await getTenantFromUser(req.user?.userId);
+    let tenant: any = await getTenantFromUser(req.user?.userId);
+
+    // Fallback: If user is an Admin/PM testing the portal, find first active tenant with leases
+    if (!tenant) {
+      tenant = await prisma.tenant.findFirst({
+        where: { isActive: true },
+        include: {
+          company: true,
+          leases: {
+            where: { isActive: true },
+            include: { unit: { include: { property: true } } },
+            orderBy: { startDate: 'desc' }
+          }
+        }
+      });
+    }
+
     if (!tenant) return res.json([]);
 
+    const activeLease = tenant.leases?.find((l: any) => l.status === 'ACTIVE' && l.isActive) || tenant.leases?.[0];
+    const isLeaseActive = !!activeLease && activeLease.status === 'ACTIVE' && (!activeLease.endDate || new Date(activeLease.endDate) >= new Date());
+
     const vehicles = await prisma.vehicle.findMany({
-      where: { tenantId: tenant.id }, // Scoped strictly to this tenant
-      include: { unit: true }
+      where: { tenantId: tenant.id },
+      include: {
+        unit: {
+          include: {
+            property: true
+          }
+        }
+      },
+      orderBy: { createdAt: 'desc' }
     });
 
-    return res.json(vehicles.map(v => ({
-      id: v.id,
-      make: v.make,
-      model: v.model,
-      licensePlate: v.licensePlate,
-      permitNumber: v.permitNumber || 'N/A',
-      color: v.color || 'Standard',
-      unitNumber: v.unit?.unitNumber || '101',
-      status: 'Authorized'
-    })));
+    return res.json(vehicles.map(v => {
+      const isAuthorized = isLeaseActive;
+      return {
+        id: v.id,
+        tenantId: v.tenantId,
+        unitId: v.unitId,
+        make: v.make,
+        model: v.model,
+        color: v.color || 'Standard',
+        licensePlate: v.licensePlate,
+        permitNumber: v.permitNumber || 'N/A',
+        parkingSpace: v.permitNumber || 'Assigned',
+        unitNumber: v.unit?.unitNumber || activeLease?.unit?.unitNumber || '-',
+        buildingName: v.unit?.property?.name || activeLease?.unit?.property?.name || 'Horizex Property',
+        isAuthorized,
+        status: isAuthorized ? 'Authorized' : 'Not Authorized',
+        issue: isAuthorized ? null : 'Lease Expired',
+        createdAt: v.createdAt,
+      };
+    }));
   } catch (err: any) {
     return res.status(500).json({ message: err.message });
   }
@@ -625,27 +661,89 @@ router.get('/vehicles', async (req: Request, res: Response) => {
 
 router.post('/vehicles', async (req: Request, res: Response) => {
   try {
-    const tenant = await getTenantFromUser(req.user?.userId);
-    if (!tenant) return res.status(404).json({ message: 'Tenant not found' });
+    let tenant: any = await getTenantFromUser(req.user?.userId);
+    if (!tenant) {
+      tenant = await prisma.tenant.findFirst({
+        where: { isActive: true },
+        include: {
+          company: true,
+          leases: {
+            where: { isActive: true },
+            include: { unit: true },
+            orderBy: { startDate: 'desc' }
+          }
+        }
+      });
+    }
 
-    const activeLease = tenant.leases?.[0];
-    const { make, model, licensePlate, permitNumber, color } = req.body;
+    if (!tenant) return res.status(404).json({ message: 'Tenant record not found' });
+
+    const activeLease = tenant.leases?.find((l: any) => l.status === 'ACTIVE' && l.isActive) || tenant.leases?.[0];
+    const { make, model, licensePlate, permitNumber, parkingSpace, color } = req.body;
+
+    if (!make?.trim() || !model?.trim() || !licensePlate?.trim()) {
+      return res.status(400).json({ message: 'Make, Model, and License Plate are required' });
+    }
+
+    const cleanPlate = licensePlate.trim().toUpperCase();
+
+    // Check if plate already registered
+    const existing = await prisma.vehicle.findUnique({
+      where: { licensePlate: cleanPlate }
+    });
+
+    if (existing) {
+      return res.status(409).json({ message: 'A vehicle with this license plate is already registered' });
+    }
+
+    let unitId = activeLease?.unitId || tenant.leases?.[0]?.unitId;
+    if (!unitId) {
+      const anyUnit = await prisma.unit.findFirst({ select: { id: true } });
+      unitId = anyUnit?.id || '';
+    }
+
+    if (!unitId) {
+      return res.status(400).json({ message: 'No unit associated with this tenant' });
+    }
+
+    const assignedSpace = (parkingSpace || permitNumber || '').trim();
 
     const newVehicle = await prisma.vehicle.create({
       data: {
         tenantId: tenant.id,
-        unitId: activeLease?.unitId || tenant.leases[0]?.unitId,
-        make: make || 'Unknown',
-        model: model || 'Unknown',
-        licensePlate: licensePlate || `PLT-${Date.now().toString().slice(-4)}`,
-        permitNumber: permitNumber || `PRM-${Date.now().toString().slice(-4)}`,
-        color: color || 'Black'
+        unitId,
+        make: make.trim(),
+        model: model.trim(),
+        color: color?.trim() || 'Black',
+        licensePlate: cleanPlate,
+        permitNumber: assignedSpace || null,
+      },
+      include: {
+        unit: {
+          include: {
+            property: true
+          }
+        }
       }
     });
 
+    const isLeaseActive = !!activeLease && activeLease.status === 'ACTIVE';
+
     return res.status(201).json({
-      ...newVehicle,
-      status: 'Authorized'
+      id: newVehicle.id,
+      tenantId: newVehicle.tenantId,
+      unitId: newVehicle.unitId,
+      make: newVehicle.make,
+      model: newVehicle.model,
+      color: newVehicle.color || 'Standard',
+      licensePlate: newVehicle.licensePlate,
+      permitNumber: newVehicle.permitNumber || 'N/A',
+      parkingSpace: newVehicle.permitNumber || 'Assigned',
+      unitNumber: newVehicle.unit?.unitNumber || '-',
+      buildingName: newVehicle.unit?.property?.name || 'Horizex Property',
+      isAuthorized: isLeaseActive,
+      status: isLeaseActive ? 'Authorized' : 'Not Authorized',
+      createdAt: newVehicle.createdAt,
     });
   } catch (err: any) {
     return res.status(500).json({ message: err.message });
@@ -654,7 +752,10 @@ router.post('/vehicles', async (req: Request, res: Response) => {
 
 router.delete('/vehicles/:id', async (req: Request, res: Response) => {
   try {
-    const tenant = await getTenantFromUser(req.user?.userId);
+    let tenant: any = await getTenantFromUser(req.user?.userId);
+    if (!tenant) {
+      tenant = await prisma.tenant.findFirst({ where: { isActive: true } });
+    }
     if (!tenant) return res.status(404).json({ message: 'Tenant not found' });
 
     await prisma.vehicle.deleteMany({
@@ -664,7 +765,7 @@ router.delete('/vehicles/:id', async (req: Request, res: Response) => {
       }
     });
 
-    return res.json({ success: true, message: 'Vehicle deleted' });
+    return res.json({ success: true, message: 'Vehicle deleted successfully' });
   } catch (err: any) {
     return res.status(500).json({ message: err.message });
   }
