@@ -149,3 +149,29 @@ export const deleteBankAccount = async (req: Request, res: Response, next: NextF
   }
 };
 
+export const getAccountTransactions = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const isSuperAdmin = req.user?.role === 'SUPER_ADMIN' || req.user?.role === 'ADMIN';
+    const companyId = (req.query.companyId as string) || (isSuperAdmin ? undefined : req.user?.effectiveCompanyId);
+    const buildingId = (req.query.buildingId as string) || undefined;
+    const startDate = (req.query.startDate as string) || undefined;
+    const endDate = (req.query.endDate as string) || undefined;
+    const type = (req.query.type as string) || undefined;
+    const search = (req.query.search as string) || undefined;
+
+    const data = await AccountingService.getAccountTransactions(req.params.id, {
+      companyId,
+      buildingId,
+      startDate,
+      endDate,
+      type,
+      search,
+    });
+
+    return sendSuccess(res, data, 200);
+  } catch (err) {
+    return next(err);
+  }
+};
+
+

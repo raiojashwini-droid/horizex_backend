@@ -12,6 +12,7 @@ import {
   createBankAccount,
   updateBankAccount,
   deleteBankAccount,
+  getAccountTransactions,
 } from './accounting.controller';
 import { validateRequest } from '../../middlewares/validate.middleware';
 import { recordPaymentSchema, createBankAccountSchema, updateBankAccountSchema } from './accounting.schema';
@@ -83,6 +84,12 @@ router.get(
   '/accounts',
   authorizeRoles('SUPER_ADMIN', 'COMPANY_ADMIN', 'ACCOUNTANT'),
   listBankAccounts
+);
+
+router.get(
+  '/accounts/:id/transactions',
+  authorizeRoles('SUPER_ADMIN', 'COMPANY_ADMIN', 'PROPERTY_MANAGER', 'ACCOUNTANT', 'OWNER'),
+  getAccountTransactions
 );
 
 router.post(

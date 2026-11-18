@@ -22,6 +22,7 @@ import ownersRouter from './modules/owners/owners.routes';
 import coworkersRouter from './modules/coworkers/coworkers.routes';
 import documentsRouter from './modules/documents/documents.routes';
 import emailRouter from './modules/email/email.routes';
+import integrationsRouter from './modules/integrations/integrations.routes';
 import { getAdminRentRoll, updatePotentialRent } from './modules/reports/rentRoll.controller';
 import { getDashboardStats } from './modules/analytics/analytics.controller';
 import {
@@ -169,6 +170,7 @@ router.use('/admin', coworkersRouter); // Mounts /admin/coworkers and /admin/my-
 router.use('/admin', ownersRouter); // Mounts /admin/owners
 router.use('/admin/documents', documentsRouter);
 router.use('/admin/email', emailRouter);
+router.use('/admin/integrations', integrationsRouter);
 
 // Communication
 router.use('/communication', communicationsRouter);
