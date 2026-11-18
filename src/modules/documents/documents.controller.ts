@@ -5,7 +5,8 @@ import { uploadBase64Image } from '../../config/cloudinary';
 
 export const getDocuments = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const companyId = (req.query.companyId as string) || req.user?.effectiveCompanyId || (req.headers['x-company-context'] as string);
+    const queryCompanyId = (req.query.companyId as string) || (req.headers['x-company-context'] as string);
+    const companyId = queryCompanyId && queryCompanyId !== 'all' ? queryCompanyId : req.user?.effectiveCompanyId;
     const search = req.query.search as string;
     const type = req.query.type as string;
 
@@ -32,7 +33,8 @@ export const uploadDocument = async (req: Request, res: Response, next: NextFunc
       }
     }
 
-    const companyId = req.user?.effectiveCompanyId || (req.headers['x-company-context'] as string);
+    const queryCompanyId = req.body.companyId || (req.query.companyId as string) || (req.headers['x-company-context'] as string);
+    const companyId = queryCompanyId && queryCompanyId !== 'all' ? queryCompanyId : req.user?.effectiveCompanyId;
 
     let fileUrl = req.body.fileUrl || null;
     const fileBase64 = req.body.fileBase64 || (typeof fileUrl === 'string' && fileUrl.startsWith('data:') ? fileUrl : null);

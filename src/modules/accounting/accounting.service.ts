@@ -306,8 +306,11 @@ export class AccountingService {
     tenantId?: string;
   }) {
     const where: any = {};
-    if (filters.companyId) {
-      where.tenant = { companyId: filters.companyId };
+    if (filters.companyId && filters.companyId !== 'all') {
+      where.OR = [
+        { tenant: { companyId: filters.companyId } },
+        { lease: { unit: { property: { companyId: filters.companyId } } } },
+      ];
     }
     if (filters.status) {
       where.status = filters.status;
@@ -319,13 +322,13 @@ export class AccountingService {
     const invoices = await prisma.invoice.findMany({
       where,
       include: {
-        tenant: { select: { id: true, firstName: true, lastName: true, email: true } },
+        tenant: { select: { id: true, firstName: true, lastName: true, email: true, companyId: true } },
         lease: {
           include: {
             unit: {
               select: {
                 unitNumber: true,
-                property: { select: { id: true, name: true } },
+                property: { select: { id: true, name: true, companyId: true } },
               },
             },
           },
@@ -339,7 +342,8 @@ export class AccountingService {
       const tenantName = inv.tenant ? `${inv.tenant.firstName || ''} ${inv.tenant.lastName || ''}`.trim() : 'Unknown';
       const buildingName = inv.lease?.unit?.property?.name || 'Property';
       const unitNumber = inv.lease?.unit?.unitNumber || '-';
-      const propertyId = inv.lease?.unit?.property?.id;
+      const propertyId = inv.lease?.unit?.property?.id || null;
+      const invoiceCompanyId = (inv.tenant as any)?.companyId || (inv.lease?.unit?.property as any)?.companyId || null;
       const amountDue = Number(inv.amountDue);
       const amountPaid = Number(inv.amountPaid || 0);
       const outstandingBalance = Math.max(0, amountDue - amountPaid);
@@ -354,6 +358,7 @@ export class AccountingService {
         buildingName,
         building: buildingName,
         propertyId,
+        companyId: invoiceCompanyId,
         unitNumber,
         unit: unitNumber,
         tenantName,

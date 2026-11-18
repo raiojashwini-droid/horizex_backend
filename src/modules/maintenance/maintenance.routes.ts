@@ -7,6 +7,8 @@ import {
   assignTicket,
   updateTicket,
   deleteTicket,
+  getTechniciansList,
+  clockTechnician,
 } from './maintenance.controller';
 import { validateRequest } from '../../middlewares/validate.middleware';
 import {
@@ -93,6 +95,19 @@ router.delete(
   '/:id',
   authorizeRoles('SUPER_ADMIN', 'COMPANY_ADMIN', 'PROPERTY_MANAGER'),
   deleteTicket
+);
+
+// Technician Roster & Clock Tracking
+router.get(
+  '/technicians',
+  authorizeRoles('SUPER_ADMIN', 'COMPANY_ADMIN', 'PROPERTY_MANAGER', 'MAINTENANCE_STAFF', 'ADMIN'),
+  getTechniciansList
+);
+
+router.post(
+  '/technicians/clock',
+  authorizeRoles('SUPER_ADMIN', 'COMPANY_ADMIN', 'PROPERTY_MANAGER', 'MAINTENANCE_STAFF', 'ADMIN'),
+  clockTechnician
 );
 
 export default router;

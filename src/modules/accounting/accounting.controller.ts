@@ -53,8 +53,9 @@ export const duplicateInvoice = async (req: Request, res: Response, next: NextFu
 
 export const listInvoices = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const isSuperAdmin = req.user?.role === 'SUPER_ADMIN';
-    const companyId = (req.query.companyId as string) || (isSuperAdmin ? undefined : req.user?.effectiveCompanyId);
+    const isSuperAdmin = req.user?.role === 'SUPER_ADMIN' || req.user?.role === 'ADMIN';
+    const queryCompanyId = (req.query.companyId as string) || (req.headers['x-company-context'] as string);
+    const companyId = queryCompanyId && queryCompanyId !== 'all' ? queryCompanyId : (isSuperAdmin ? undefined : req.user?.effectiveCompanyId);
 
     const invoices = await AccountingService.listInvoices({
       companyId,
@@ -69,8 +70,9 @@ export const listInvoices = async (req: Request, res: Response, next: NextFuncti
 
 export const listPaymentsReceived = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const isSuperAdmin = req.user?.role === 'SUPER_ADMIN';
-    const companyId = (req.query.companyId as string) || (isSuperAdmin ? undefined : req.user?.effectiveCompanyId);
+    const isSuperAdmin = req.user?.role === 'SUPER_ADMIN' || req.user?.role === 'ADMIN';
+    const queryCompanyId = (req.query.companyId as string) || (req.headers['x-company-context'] as string);
+    const companyId = queryCompanyId && queryCompanyId !== 'all' ? queryCompanyId : (isSuperAdmin ? undefined : req.user?.effectiveCompanyId);
 
     const payments = await AccountingService.listPaymentsReceived(companyId);
     return sendSuccess(res, payments, 200);
@@ -81,8 +83,9 @@ export const listPaymentsReceived = async (req: Request, res: Response, next: Ne
 
 export const getOutstandingDues = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const isSuperAdmin = req.user?.role === 'SUPER_ADMIN';
-    const companyId = (req.query.companyId as string) || (isSuperAdmin ? undefined : req.user?.effectiveCompanyId);
+    const isSuperAdmin = req.user?.role === 'SUPER_ADMIN' || req.user?.role === 'ADMIN';
+    const queryCompanyId = (req.query.companyId as string) || (req.headers['x-company-context'] as string);
+    const companyId = queryCompanyId && queryCompanyId !== 'all' ? queryCompanyId : (isSuperAdmin ? undefined : req.user?.effectiveCompanyId);
 
     const dues = await AccountingService.getOutstandingDues(companyId);
     return sendSuccess(res, dues, 200);
