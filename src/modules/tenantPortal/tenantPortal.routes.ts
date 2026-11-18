@@ -1120,102 +1120,93 @@ router.get('/reports', async (req: Request, res: Response) => {
       });
     }
 
-    if (!tenant) {
-      return res.json({
-        reports: [],
-        stats: {
-          reportsViewable: 0,
-          reportsViewableSub: 'Real-time',
-          paidAmount: 0,
-          paidCount: 0,
-          outstandingAmount: 0,
-          dataLatency: 'Real-time'
-        }
-      });
-    }
-
-    // 1. Fetch payments belonging strictly to this tenant
-    const payments = await prisma.payment.findMany({
-      where: { tenantId: tenant.id },
-      include: { invoice: true },
-      orderBy: { paidAt: 'desc' }
-    });
-
-    // 2. Fetch invoices belonging strictly to this tenant
-    const invoices = await prisma.invoice.findMany({
-      where: { tenantId: tenant.id },
-      orderBy: { dueDate: 'desc' }
-    });
-
     let totalPaid = 0;
-    const paymentRows = payments.map(p => {
-      const amt = Number(p.amount);
-      totalPaid += amt;
-      return {
-        id: p.id,
-        date: p.paidAt.toISOString(),
-        invoiceNo: p.invoice?.invoiceNumber || p.referenceId || `PAY-${p.id.slice(0, 8).toUpperCase()}`,
-        method: p.paymentMethod === 'INTERAC_E_TRANSFER'
-          ? 'Interac e-Transfer'
-          : p.paymentMethod === 'BANK_TRANSFER'
-          ? 'Bank Transfer'
-          : p.paymentMethod === 'CREDIT_CARD'
-          ? 'Credit Card'
-          : 'Online Payment',
-        amount: amt,
-        status: 'Completed'
-      };
-    });
+    let totalOutstanding = 0;
+    const paymentRows: any[] = [];
+    const invoiceRows: any[] = [];
 
-    // If payments table has 0 rows but invoices has paid amount, extract from invoices
-    if (paymentRows.length === 0) {
-      const paidInvoices = invoices.filter(inv => Number(inv.amountPaid) > 0);
-      for (const inv of paidInvoices) {
-        const amt = Number(inv.amountPaid);
+    if (tenant) {
+      // 1. Fetch payments belonging strictly to this tenant
+      const payments = await prisma.payment.findMany({
+        where: { tenantId: tenant.id },
+        include: { invoice: true },
+        orderBy: { paidAt: 'desc' }
+      });
+
+      // 2. Fetch invoices belonging strictly to this tenant
+      const invoices = await prisma.invoice.findMany({
+        where: { tenantId: tenant.id },
+        orderBy: { dueDate: 'desc' }
+      });
+
+      paymentRows.push(...payments.map(p => {
+        const amt = Number(p.amount);
         totalPaid += amt;
-        paymentRows.push({
-          id: `inv-pay-${inv.id}`,
-          date: (inv.updatedAt || inv.dueDate).toISOString(),
-          invoiceNo: inv.invoiceNumber || `INV-${inv.id.slice(0, 8).toUpperCase()}`,
-          method: 'Online Payment',
+        return {
+          id: p.id,
+          date: p.paidAt.toISOString(),
+          invoiceNo: p.invoice?.invoiceNumber || p.referenceId || `PAY-${p.id.slice(0, 8).toUpperCase()}`,
+          method: p.paymentMethod === 'INTERAC_E_TRANSFER'
+            ? 'Interac e-Transfer'
+            : p.paymentMethod === 'BANK_TRANSFER'
+            ? 'Bank Transfer'
+            : p.paymentMethod === 'CREDIT_CARD'
+            ? 'Credit Card'
+            : 'Online Payment',
           amount: amt,
           status: 'Completed'
-        });
+        };
+      }));
+
+      // If payments table has 0 rows but invoices has paid amount, extract from invoices
+      if (paymentRows.length === 0) {
+        const paidInvoices = invoices.filter(inv => Number(inv.amountPaid) > 0);
+        for (const inv of paidInvoices) {
+          const amt = Number(inv.amountPaid);
+          totalPaid += amt;
+          paymentRows.push({
+            id: `inv-pay-${inv.id}`,
+            date: (inv.updatedAt || inv.dueDate).toISOString(),
+            invoiceNo: inv.invoiceNumber || `INV-${inv.id.slice(0, 8).toUpperCase()}`,
+            method: 'Online Payment',
+            amount: amt,
+            status: 'Completed'
+          });
+        }
       }
+
+      invoiceRows.push(...invoices.map(inv => {
+        const amt = Number(inv.amountDue);
+        const paid = Number(inv.amountPaid);
+        const bal = Math.max(0, amt - paid);
+        totalOutstanding += bal;
+
+        let st = 'Paid';
+        if (bal > 0 && paid > 0) st = 'Partial';
+        else if (bal > 0 && new Date(inv.dueDate) < new Date()) st = 'Overdue';
+        else if (bal > 0) st = 'Unpaid';
+
+        return {
+          id: inv.id,
+          date: inv.dueDate.toISOString(),
+          invoiceNo: inv.invoiceNumber || `INV-${inv.id.slice(0, 8).toUpperCase()}`,
+          month: new Date(inv.dueDate).toLocaleDateString('en-CA', { month: 'long', year: 'numeric' }),
+          status: st,
+          amount: amt,
+          paid: paid,
+          balance: bal
+        };
+      }));
     }
 
-    let totalOutstanding = 0;
-    const invoiceRows = invoices.map(inv => {
-      const amt = Number(inv.amountDue);
-      const paid = Number(inv.amountPaid);
-      const bal = Math.max(0, amt - paid);
-      totalOutstanding += bal;
-
-      let st = 'Paid';
-      if (bal > 0 && paid > 0) st = 'Partial';
-      else if (bal > 0 && new Date(inv.dueDate) < new Date()) st = 'Overdue';
-      else if (bal > 0) st = 'Unpaid';
-
-      return {
-        id: inv.id,
-        date: inv.dueDate.toISOString(),
-        invoiceNo: inv.invoiceNumber || `INV-${inv.id.slice(0, 8).toUpperCase()}`,
-        month: new Date(inv.dueDate).toLocaleDateString('en-CA', { month: 'long', year: 'numeric' }),
-        status: st,
-        amount: amt,
-        paid: paid,
-        balance: bal
-      };
-    });
-
-    const activeLease = tenant.leases?.find((l: any) => l.status === 'ACTIVE' && l.isActive) || tenant.leases?.[0];
-    const propertyName = activeLease?.unit?.property?.name || tenant.company?.name || 'Horizex Real Estate';
+    const activeLease = tenant?.leases?.find((l: any) => l.status === 'ACTIVE' && l.isActive) || tenant?.leases?.[0];
+    const propertyName = activeLease?.unit?.property?.name || tenant?.company?.name || 'Horizex Real Estate';
     const unitNumber = activeLease?.unit?.unitNumber || '';
 
     return res.json({
       tenantInfo: {
-        name: `${tenant.firstName} ${tenant.lastName}`.trim(),
-        email: tenant.email,
+        name: tenant ? `${tenant.firstName} ${tenant.lastName}`.trim() : 'Account Statement',
+        email: tenant?.email || '',
         propertyName,
         unitNumber,
       },
