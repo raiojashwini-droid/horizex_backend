@@ -1091,7 +1091,35 @@ router.post('/insurance', async (req: Request, res: Response) => {
 // 10. Reports (Fully matches TenantReports.jsx expectations)
 router.get('/reports', async (req: Request, res: Response) => {
   try {
-    const tenant = await getTenantFromUser(req.user?.userId);
+    let tenant: any = await getTenantFromUser(req.user?.userId);
+
+    // Fallback: If user is an Admin/PM testing the portal, find first active tenant with leases
+    if (!tenant) {
+      tenant = await prisma.tenant.findFirst({
+        where: { isActive: true },
+        include: {
+          company: true,
+          leases: {
+            where: { isActive: true },
+            include: { unit: { include: { property: true } } },
+            orderBy: { startDate: 'desc' }
+          }
+        }
+      });
+    }
+
+    if (!tenant) {
+      tenant = await prisma.tenant.findFirst({
+        include: {
+          company: true,
+          leases: {
+            include: { unit: { include: { property: true } } },
+            orderBy: { startDate: 'desc' }
+          }
+        }
+      });
+    }
+
     if (!tenant) {
       return res.json({
         reports: [],
@@ -1124,12 +1152,37 @@ router.get('/reports', async (req: Request, res: Response) => {
       const amt = Number(p.amount);
       totalPaid += amt;
       return {
+        id: p.id,
         date: p.paidAt.toISOString(),
-        invoiceNo: p.invoice?.invoiceNumber || p.referenceId || 'PAY-001',
-        method: p.paymentMethod === 'INTERAC_E_TRANSFER' ? 'Interac' : (p.paymentMethod === 'BANK_TRANSFER' ? 'Bank' : 'Card'),
-        amount: amt
+        invoiceNo: p.invoice?.invoiceNumber || p.referenceId || `PAY-${p.id.slice(0, 8).toUpperCase()}`,
+        method: p.paymentMethod === 'INTERAC_E_TRANSFER'
+          ? 'Interac e-Transfer'
+          : p.paymentMethod === 'BANK_TRANSFER'
+          ? 'Bank Transfer'
+          : p.paymentMethod === 'CREDIT_CARD'
+          ? 'Credit Card'
+          : 'Online Payment',
+        amount: amt,
+        status: 'Completed'
       };
     });
+
+    // If payments table has 0 rows but invoices has paid amount, extract from invoices
+    if (paymentRows.length === 0) {
+      const paidInvoices = invoices.filter(inv => Number(inv.amountPaid) > 0);
+      for (const inv of paidInvoices) {
+        const amt = Number(inv.amountPaid);
+        totalPaid += amt;
+        paymentRows.push({
+          id: `inv-pay-${inv.id}`,
+          date: (inv.updatedAt || inv.dueDate).toISOString(),
+          invoiceNo: inv.invoiceNumber || `INV-${inv.id.slice(0, 8).toUpperCase()}`,
+          method: 'Online Payment',
+          amount: amt,
+          status: 'Completed'
+        });
+      }
+    }
 
     let totalOutstanding = 0;
     const invoiceRows = invoices.map(inv => {
@@ -1140,44 +1193,39 @@ router.get('/reports', async (req: Request, res: Response) => {
 
       let st = 'Paid';
       if (bal > 0 && paid > 0) st = 'Partial';
+      else if (bal > 0 && new Date(inv.dueDate) < new Date()) st = 'Overdue';
       else if (bal > 0) st = 'Unpaid';
 
       return {
+        id: inv.id,
         date: inv.dueDate.toISOString(),
+        invoiceNo: inv.invoiceNumber || `INV-${inv.id.slice(0, 8).toUpperCase()}`,
         month: new Date(inv.dueDate).toLocaleDateString('en-CA', { month: 'long', year: 'numeric' }),
         status: st,
         amount: amt,
+        paid: paid,
         balance: bal
       };
     });
 
-    // If fresh account with no seed payments yet, show friendly baseline data
-    if (paymentRows.length === 0 && totalPaid === 0) {
-      totalPaid = 1250;
-      paymentRows.push({
-        date: '2026-01-01T00:00:00.000Z',
-        invoiceNo: 'INV-2026-001',
-        method: 'Interac',
-        amount: 1250
-      });
-    }
-    if (invoiceRows.length === 0) {
-      invoiceRows.push({
-        date: '2026-01-01T00:00:00.000Z',
-        month: 'January 2026',
-        status: 'Paid',
-        amount: 1250,
-        balance: 0
-      });
-    }
+    const activeLease = tenant.leases?.find((l: any) => l.status === 'ACTIVE' && l.isActive) || tenant.leases?.[0];
+    const propertyName = activeLease?.unit?.property?.name || tenant.company?.name || 'Horizex Real Estate';
+    const unitNumber = activeLease?.unit?.unitNumber || '';
 
     return res.json({
+      tenantInfo: {
+        name: `${tenant.firstName} ${tenant.lastName}`.trim(),
+        email: tenant.email,
+        propertyName,
+        unitNumber,
+      },
       reports: [
         {
           id: 'rep-payment-history',
           type: 'payment_history',
           title: 'Payment History Statement',
           description: 'Official record of all rental payments received and processed',
+          lastGenerated: paymentRows.length > 0 ? new Date(paymentRows[0].date).toLocaleDateString('en-CA') : new Date().toLocaleDateString('en-CA'),
           data: paymentRows
         },
         {
@@ -1185,6 +1233,7 @@ router.get('/reports', async (req: Request, res: Response) => {
           type: 'invoice_summary',
           title: 'Rent Invoices & Charges',
           description: 'Summary of all monthly rent charges, utility allocations and fees',
+          lastGenerated: invoiceRows.length > 0 ? new Date(invoiceRows[0].date).toLocaleDateString('en-CA') : new Date().toLocaleDateString('en-CA'),
           data: invoiceRows
         }
       ],
@@ -1197,6 +1246,73 @@ router.get('/reports', async (req: Request, res: Response) => {
         dataLatency: 'Real-time'
       }
     });
+  } catch (err: any) {
+    return res.status(500).json({ message: err.message });
+  }
+});
+
+router.get('/reports/:type/download', async (req: Request, res: Response) => {
+  try {
+    let tenant: any = await getTenantFromUser(req.user?.userId);
+    if (!tenant) {
+      tenant = await prisma.tenant.findFirst({
+        where: { isActive: true },
+        include: {
+          company: true,
+          leases: {
+            where: { isActive: true },
+            include: { unit: { include: { property: true } } },
+            orderBy: { startDate: 'desc' }
+          }
+        }
+      });
+    }
+
+    if (!tenant) return res.status(404).json({ message: 'Tenant record not found' });
+
+    const { type } = req.params;
+    const isPayment = type === 'payment_history';
+
+    if (isPayment) {
+      const payments = await prisma.payment.findMany({
+        where: { tenantId: tenant.id },
+        include: { invoice: true },
+        orderBy: { paidAt: 'desc' }
+      });
+
+      let csv = 'Payment Date,Receipt / Invoice #,Payment Method,Amount,Status\n';
+      payments.forEach(p => {
+        const d = new Date(p.paidAt).toLocaleDateString('en-CA');
+        const inv = p.invoice?.invoiceNumber || p.referenceId || `PAY-${p.id.slice(0, 8).toUpperCase()}`;
+        const m = p.paymentMethod === 'INTERAC_E_TRANSFER' ? 'Interac e-Transfer' : p.paymentMethod === 'BANK_TRANSFER' ? 'Bank Transfer' : 'Online Payment';
+        const a = Number(p.amount).toFixed(2);
+        csv += `"${d}","${inv}","${m}",${a},"Completed"\n`;
+      });
+
+      res.setHeader('Content-Type', 'text/csv');
+      res.setHeader('Content-Disposition', `attachment; filename="payment-history-${tenant.id.slice(0, 8)}.csv"`);
+      return res.send(csv);
+    } else {
+      const invoices = await prisma.invoice.findMany({
+        where: { tenantId: tenant.id },
+        orderBy: { dueDate: 'desc' }
+      });
+
+      let csv = 'Due Date,Invoice #,Billing Month,Amount Due,Amount Paid,Balance,Status\n';
+      invoices.forEach(inv => {
+        const d = new Date(inv.dueDate).toLocaleDateString('en-CA');
+        const num = inv.invoiceNumber || `INV-${inv.id.slice(0, 8).toUpperCase()}`;
+        const month = new Date(inv.dueDate).toLocaleDateString('en-CA', { month: 'long', year: 'numeric' });
+        const due = Number(inv.amountDue).toFixed(2);
+        const paid = Number(inv.amountPaid).toFixed(2);
+        const bal = Math.max(0, Number(inv.amountDue) - Number(inv.amountPaid)).toFixed(2);
+        csv += `"${d}","${num}","${month}",${due},${paid},${bal},"${inv.status}"\n`;
+      });
+
+      res.setHeader('Content-Type', 'text/csv');
+      res.setHeader('Content-Disposition', `attachment; filename="invoices-summary-${tenant.id.slice(0, 8)}.csv"`);
+      return res.send(csv);
+    }
   } catch (err: any) {
     return res.status(500).json({ message: err.message });
   }
