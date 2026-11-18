@@ -10,9 +10,15 @@ export class MaintenanceService {
     status?: any;
   }) {
     const where: any = {};
-    if (filters.propertyId) {
+    const hasCompany = Boolean(filters.companyId && filters.companyId !== 'all' && filters.companyId !== 'null');
+    const hasProperty = Boolean(filters.propertyId && filters.propertyId !== 'all' && filters.propertyId !== 'null');
+
+    if (hasProperty && hasCompany) {
       where.propertyId = filters.propertyId;
-    } else if (filters.companyId) {
+      where.property = { companyId: filters.companyId };
+    } else if (hasProperty) {
+      where.propertyId = filters.propertyId;
+    } else if (hasCompany) {
       where.property = { companyId: filters.companyId };
     }
 
@@ -55,7 +61,7 @@ export class MaintenanceService {
 
   static async getTicketById(id: string, companyId?: string | null) {
     const where: any = { id };
-    if (companyId) {
+    if (companyId && companyId !== 'all' && companyId !== 'null') {
       where.property = { companyId };
     }
 
@@ -122,27 +128,18 @@ export class MaintenanceService {
       throw new AppError('No property available to associate maintenance ticket', 404, 'PROPERTY_NOT_FOUND');
     }
 
-    let unitId = data.unitId;
-    const unitMatches = property.units?.some((u) => u.id === unitId);
-    if (!unitMatches) {
-      if (property.units && property.units.length > 0) {
-        unitId = property.units[0].id;
-      } else {
-        const newUnit = await prisma.unit.create({
-          data: {
-            propertyId: property.id,
-            unitNumber: '101',
-            status: 'OCCUPIED',
-            baseRent: 1000,
-          },
-        });
-        unitId = newUnit.id;
+    let finalUnitId: string | undefined = undefined;
+
+    // Check if data.unitId is an actual existing unit for this property
+    if (data.unitId && data.unitId !== 'unit-101' && data.unitId.trim() !== '') {
+      const match = property.units?.find((u) => u.id === data.unitId);
+      if (match) {
+        finalUnitId = match.id;
       }
     }
 
-    // Resolve unitId if not directly provided
-    let resolvedUnitId = data.unitId && data.unitId.trim() !== '' ? data.unitId : undefined;
-    if (!resolvedUnitId) {
+    // Try finding by unitNumber / aptNumber
+    if (!finalUnitId) {
       const searchUnitNumber = (data.unitNumber || data.unit || data.aptNumber || '')
         .trim()
         .toLowerCase()
@@ -152,20 +149,35 @@ export class MaintenanceService {
           (u) => (u.unitNumber || '').trim().toLowerCase().replace(/^apt\.?\s*/i, '') === searchUnitNumber
         );
         if (matchedUnit) {
-          resolvedUnitId = matchedUnit.id;
+          finalUnitId = matchedUnit.id;
         }
       }
-      if (!resolvedUnitId && property.units && property.units.length > 0) {
-        resolvedUnitId = property.units[0].id;
+    }
+
+    // Fallback to first existing unit on this property
+    if (!finalUnitId && property.units && property.units.length > 0) {
+      finalUnitId = property.units[0].id;
+    }
+
+    // If still no unit, check if property has any unit in DB
+    if (!finalUnitId) {
+      const anyUnit = await prisma.unit.findFirst({ where: { propertyId: property.id } });
+      if (anyUnit) {
+        finalUnitId = anyUnit.id;
+      } else {
+        // Auto-create a default Unit 101 on this property
+        const newUnit = await prisma.unit.create({
+          data: {
+            propertyId: property.id,
+            unitNumber: '101',
+            status: 'OCCUPIED',
+            baseRent: 1000,
+          },
+        });
+        finalUnitId = newUnit.id;
       }
     }
 
-    if (!resolvedUnitId) {
-      const anyUnit = await prisma.unit.findFirst({ where: { propertyId: property.id } });
-      resolvedUnitId = anyUnit?.id;
-    }
-
-    const finalUnitId = (resolvedUnitId || unitId) as string;
     if (!finalUnitId) {
       throw new AppError('No unit found for this property', 400, 'UNIT_REQUIRED');
     }

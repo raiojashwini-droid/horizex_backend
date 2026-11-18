@@ -3,7 +3,7 @@ import { z } from 'zod';
 export const createTicketSchema = z.object({
   body: z.object({
     propertyId: z.string().uuid('Invalid property ID').or(z.string().min(1)),
-    unitId: z.string().uuid('Invalid unit ID').optional().nullable().or(z.literal('')),
+    unitId: z.string().optional().nullable().or(z.literal('')),
     unit: z.string().optional(),
     unitNumber: z.string().optional(),
     aptNumber: z.string().optional(),

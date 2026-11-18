@@ -2,10 +2,18 @@ import { Request, Response, NextFunction } from 'express';
 import { EmailService } from './email.service';
 import { sendSuccess } from '../../utils/apiResponse.util';
 
+function resolveCompanyId(req: Request): string | undefined {
+  const reqComp = (req.query.companyId as string) || (req.headers['x-company-context'] as string) || req.user?.effectiveCompanyId;
+  if (reqComp && reqComp !== 'all' && reqComp !== 'null' && reqComp !== 'undefined') {
+    return reqComp;
+  }
+  const isAdmin = req.user?.role === 'ADMIN' || req.user?.role === 'SUPER_ADMIN';
+  return isAdmin ? undefined : (req.user?.companyId || undefined);
+}
+
 export const getTemplates = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const isAdmin = req.user?.role === 'ADMIN' || req.user?.role === 'SUPER_ADMIN';
-    const companyId = isAdmin ? undefined : req.user?.effectiveCompanyId;
+    const companyId = resolveCompanyId(req);
     const templates = await EmailService.getTemplates(companyId);
     return sendSuccess(res, templates);
   } catch (err) {
@@ -15,8 +23,7 @@ export const getTemplates = async (req: Request, res: Response, next: NextFuncti
 
 export const createTemplate = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const isAdmin = req.user?.role === 'ADMIN' || req.user?.role === 'SUPER_ADMIN';
-    const companyId = isAdmin ? undefined : req.user?.effectiveCompanyId;
+    const companyId = resolveCompanyId(req);
     const template = await EmailService.createTemplate({
       ...req.body,
       companyId: req.body.companyId || companyId,
@@ -58,8 +65,7 @@ export const getSignature = async (req: Request, res: Response, next: NextFuncti
 
 export const sendBulk = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const isAdmin = req.user?.role === 'ADMIN' || req.user?.role === 'SUPER_ADMIN';
-    const companyId = isAdmin ? undefined : req.user?.effectiveCompanyId;
+    const companyId = req.body.companyId || resolveCompanyId(req);
     const result = await EmailService.sendBulk(req.body, companyId, req.user?.userId);
     return sendSuccess(res, result);
   } catch (err) {
@@ -69,8 +75,7 @@ export const sendBulk = async (req: Request, res: Response, next: NextFunction) 
 
 export const getHistory = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const isAdmin = req.user?.role === 'ADMIN' || req.user?.role === 'SUPER_ADMIN';
-    const companyId = isAdmin ? undefined : req.user?.effectiveCompanyId;
+    const companyId = resolveCompanyId(req);
     const history = await EmailService.getHistory({
       ...req.query,
       companyId,

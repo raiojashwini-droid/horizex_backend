@@ -51,10 +51,13 @@ export async function ensureUserPermissions(userId: string) {
 
 export const getCoworkers = async (req: Request, res: Response) => {
   try {
+    const requestedCompanyId = (req.query.companyId as string) || (req.headers['x-company-context'] as string) || req.user?.effectiveCompanyId;
+    const whereClause: any = { role: 'COWORKER' };
+    if (requestedCompanyId && requestedCompanyId !== 'all') {
+      whereClause.OR = [{ companyId: requestedCompanyId }, { companyId: null }];
+    }
     const coworkers = await prisma.user.findMany({
-      where: {
-        role: 'COWORKER',
-      },
+      where: whereClause,
       select: {
         id: true,
         email: true,

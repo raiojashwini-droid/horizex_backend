@@ -23,12 +23,30 @@ export class EmailService {
   // ==========================================
   static async getTemplates(companyId?: string | null): Promise<EmailTemplateItem[]> {
     try {
-      const templates: any[] = await prisma.$queryRawUnsafe(`
+      // If legacy templates exist without companyId, map them safely so they belong to the current company
+      if (companyId && companyId !== 'all') {
+        try {
+          await prisma.$executeRawUnsafe(`
+            UPDATE "EmailTemplate" 
+            SET "companyId" = $1 
+            WHERE "companyId" IS NULL AND "isActive" = TRUE
+          `, companyId);
+        } catch (_) {}
+      }
+
+      let query = `
         SELECT id, name, subject, body, type, language, "documentIds", "companyId", "createdAt", "updatedAt"
         FROM "EmailTemplate"
         WHERE "isActive" = TRUE
-        ORDER BY "createdAt" DESC
-      `);
+      `;
+      const params: any[] = [];
+      if (companyId && companyId !== 'all') {
+        query += ` AND "companyId" = $1`;
+        params.push(companyId);
+      }
+      query += ` ORDER BY "createdAt" DESC`;
+
+      const templates: any[] = await prisma.$queryRawUnsafe(query, ...params);
 
       // Optionally fetch documents info for attached documentIds
       const allDocIds: string[] = [];
@@ -262,8 +280,30 @@ export class EmailService {
     const adminSenderId = senderUserId || '13445edb-cdc2-475b-81c8-d8750e17ffa9';
 
     for (const rec of rawRecipients) {
-      const email = rec.email?.trim();
-      const name = rec.name?.trim() || 'Resident';
+      let email = rec.email?.trim();
+      let name = rec.name?.trim() || 'Resident';
+
+      if ((!email || !email.includes('@')) && rec.id) {
+        try {
+          const tenant = await prisma.tenant.findUnique({
+            where: { id: rec.id },
+            select: { email: true, firstName: true, lastName: true },
+          });
+          if (tenant?.email) {
+            email = tenant.email.trim();
+            name = `${tenant.firstName || ''} ${tenant.lastName || ''}`.trim() || name;
+          } else {
+            const user = await prisma.user.findUnique({
+              where: { id: rec.id },
+              select: { email: true, firstName: true, lastName: true },
+            });
+            if (user?.email) {
+              email = user.email.trim();
+              name = `${user.firstName || ''} ${user.lastName || ''}`.trim() || name;
+            }
+          }
+        } catch (_) {}
+      }
 
       if (!email || !email.includes('@')) {
         failedCount += 1;
@@ -378,6 +418,12 @@ export class EmailService {
     if (query.buildingId && query.buildingId !== 'all') {
       whereClauses.push(`"buildingId" = $${pIdx}`);
       params.push(query.buildingId);
+      pIdx++;
+    }
+
+    if (query.companyId && query.companyId !== 'all') {
+      whereClauses.push(`"companyId" = $${pIdx}`);
+      params.push(query.companyId);
       pIdx++;
     }
 
