@@ -414,6 +414,7 @@ router.post('/pay', async (req: Request, res: Response) => {
       success: true,
       message: 'Payment processed successfully',
       paymentId: payment.id,
+      referenceId: payment.referenceId,
       amount: payAmount
     });
   } catch (err: any) {
