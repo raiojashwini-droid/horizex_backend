@@ -306,11 +306,8 @@ export class AccountingService {
     tenantId?: string;
   }) {
     const where: any = {};
-    if (filters.companyId && filters.companyId !== 'all') {
-      where.OR = [
-        { tenant: { companyId: filters.companyId } },
-        { lease: { unit: { property: { companyId: filters.companyId } } } },
-      ];
+    if (filters.companyId) {
+      where.tenant = { companyId: filters.companyId };
     }
     if (filters.status) {
       where.status = filters.status;
@@ -322,13 +319,13 @@ export class AccountingService {
     const invoices = await prisma.invoice.findMany({
       where,
       include: {
-        tenant: { select: { id: true, firstName: true, lastName: true, email: true, companyId: true } },
+        tenant: { select: { id: true, firstName: true, lastName: true, email: true } },
         lease: {
           include: {
             unit: {
               select: {
                 unitNumber: true,
-                property: { select: { id: true, name: true, companyId: true } },
+                property: { select: { id: true, name: true } },
               },
             },
           },
@@ -342,8 +339,7 @@ export class AccountingService {
       const tenantName = inv.tenant ? `${inv.tenant.firstName || ''} ${inv.tenant.lastName || ''}`.trim() : 'Unknown';
       const buildingName = inv.lease?.unit?.property?.name || 'Property';
       const unitNumber = inv.lease?.unit?.unitNumber || '-';
-      const propertyId = inv.lease?.unit?.property?.id || null;
-      const invoiceCompanyId = (inv.tenant as any)?.companyId || (inv.lease?.unit?.property as any)?.companyId || null;
+      const propertyId = inv.lease?.unit?.property?.id;
       const amountDue = Number(inv.amountDue);
       const amountPaid = Number(inv.amountPaid || 0);
       const outstandingBalance = Math.max(0, amountDue - amountPaid);
@@ -358,7 +354,6 @@ export class AccountingService {
         buildingName,
         building: buildingName,
         propertyId,
-        companyId: invoiceCompanyId,
         unitNumber,
         unit: unitNumber,
         tenantName,
@@ -632,7 +627,6 @@ export class AccountingService {
         ...(account.companyId
           ? [
               {
-                bankAccountId: null,
                 invoice: {
                   lease: {
                     unit: {
@@ -640,6 +634,9 @@ export class AccountingService {
                     },
                   },
                 },
+              },
+              {
+                tenant: { companyId: account.companyId },
               },
             ]
           : []),
@@ -795,7 +792,7 @@ export class AccountingService {
       const openAmt = Math.round((runningBalance > 0 ? runningBalance : currentBalance) * 100) / 100;
       transactions.push({
         id: `INIT-${account.id}`,
-        date: account.createdAt.toISOString().split('T')[0],
+        date: account.createdAt ? account.createdAt.toISOString().split('T')[0] : new Date().toISOString().split('T')[0],
         description: `Opening Balance / Initial Deposit`,
         reference: `INIT-${(account.accountNumber || '0001').slice(-4)}`,
         category: 'Opening Balance',
@@ -804,6 +801,9 @@ export class AccountingService {
         balance: openAmt,
       });
     }
+
+    // Ensure all transactions including initial opening balance are sorted by date descending
+    transactions.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
 
     const totalCredits = transactions
       .filter((t) => t.type === 'CREDIT')

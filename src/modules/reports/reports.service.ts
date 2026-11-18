@@ -9,59 +9,6 @@ export interface CustomQueryParams {
   sortDirection?: 'asc' | 'desc';
 }
 
-const DEFAULT_TEMPLATES = [
-  {
-    id: 'temp-fin-1',
-    templateName: 'Unpaid Rent Collections',
-    module: 'Financials',
-    selectedColumns: ['invoiceNo', 'tenantName', 'buildingName', 'unitNumber', 'dueDate', 'amount', 'balance', 'status'],
-    filters: {},
-    grouping: 'buildingName',
-    sorting: { column: 'dueDate', direction: 'asc' },
-    createdAt: '2026-01-01T00:00:00.000Z',
-  },
-  {
-    id: 'temp-prop-1',
-    templateName: 'Vacant Units Overview',
-    module: 'Properties',
-    selectedColumns: ['buildingName', 'unitNumber', 'unitType', 'monthlyRent', 'status'],
-    filters: {},
-    grouping: 'buildingName',
-    sorting: { column: 'buildingName', direction: 'asc' },
-    createdAt: '2026-01-01T00:00:00.000Z',
-  },
-  {
-    id: 'temp-lease-1',
-    templateName: 'Upcoming Lease Renewals',
-    module: 'Leases',
-    selectedColumns: ['tenantName', 'buildingName', 'unitNumber', 'endDate', 'daysRemaining', 'status'],
-    filters: {},
-    grouping: 'buildingName',
-    sorting: { column: 'endDate', direction: 'asc' },
-    createdAt: '2026-01-01T00:00:00.000Z',
-  },
-  {
-    id: 'temp-tal-1',
-    templateName: 'Active Court Litigations',
-    module: 'TAL Cases',
-    selectedColumns: ['caseNo', 'tenantName', 'buildingName', 'unitNumber', 'category', 'status', 'hearDate'],
-    filters: {},
-    grouping: 'buildingName',
-    sorting: { column: 'caseNo', direction: 'asc' },
-    createdAt: '2026-01-01T00:00:00.000Z',
-  },
-  {
-    id: 'temp-pay-1',
-    templateName: 'Monthly Payroll Payouts',
-    module: 'Payroll',
-    selectedColumns: ['employeeName', 'department', 'grossAmount', 'deductions', 'netAmount', 'payrollMonth'],
-    filters: {},
-    grouping: 'department',
-    sorting: { column: 'grossAmount', direction: 'desc' },
-    createdAt: '2026-01-01T00:00:00.000Z',
-  },
-];
-
 export class ReportsService {
   /**
    * Execute Custom Report Builder query directly against PostgreSQL database using Prisma
@@ -352,7 +299,7 @@ export class ReportsService {
   }
 
   /**
-   * Retrieve report templates (Default + Saved in PostgreSQL AuditLog table)
+   * Retrieve report templates (Strictly saved templates from PostgreSQL AuditLog)
    */
   static async getTemplates(moduleFilter?: string) {
     const savedLogs = await prisma.auditLog.findMany({
@@ -381,12 +328,10 @@ export class ReportsService {
       }
     });
 
-    const combined = [...savedTemplates, ...DEFAULT_TEMPLATES.filter((d) => !seenIds.has(d.id))];
-
     if (moduleFilter) {
-      return combined.filter((t) => t.module === moduleFilter);
+      return savedTemplates.filter((t) => t.module === moduleFilter);
     }
-    return combined;
+    return savedTemplates;
   }
 
   /**
