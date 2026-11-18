@@ -1050,6 +1050,58 @@ export class CommunicationsService {
       return messageObj;
     }
 
+    // 0.1 Check if sender is an OWNER (sending message to Admin / Property Support)
+    let isSenderOwner = false;
+    if (senderUserId) {
+      const senderUser = await prisma.user.findUnique({
+        where: { id: senderUserId },
+        select: { id: true, role: true },
+      });
+      if (senderUser && senderUser.role === 'OWNER') {
+        isSenderOwner = true;
+      }
+    }
+
+    if (isSenderOwner) {
+      const ownerId = senderUserId!;
+      const note = await prisma.note.create({
+        data: {
+          authorId: ownerId,
+          targetType: 'OWNER_CHAT',
+          targetId: ownerId,
+          title: 'Owner Support Chat',
+          content: bodyText,
+        },
+      });
+
+      const noteObj = {
+        id: note.id,
+        senderId: ownerId,
+        recipientId: targetId,
+        receiverId: targetId,
+        content: note.content,
+        message: note.content,
+        createdAt: new Date(note.createdAt).toISOString(),
+        sentAt: new Date(note.createdAt).toISOString(),
+        direction: 'INBOUND',
+        smsStatus: 'delivered',
+        isMe: true,
+      };
+
+      // Real-time broadcast to owner's conversation room and admin global channel
+      emitToConversation(ownerId, 'new_message', noteObj);
+      emitGlobal('conversation_updated', {
+        id: ownerId,
+        lastMessage: {
+          content: note.content,
+          createdAt: new Date(note.createdAt).toISOString(),
+        },
+        unreadCountDelta: 1,
+      });
+
+      return noteObj;
+    }
+
     // 1. Check if target is a Tenant (or a user with role TENANT)
     let targetTenant = await prisma.tenant.findUnique({
       where: { id: targetId },
