@@ -68,16 +68,38 @@ export class ReportsService {
    */
   static async executeCustomReportQuery(params: CustomQueryParams) {
     const { module, companyId, buildingId, search, sortColumn, sortDirection = 'asc' } = params;
-    const cleanComp = companyId && companyId !== 'all' ? companyId : null;
+    let targetCompanyId = companyId && companyId !== 'all' ? companyId : null;
     const cleanBld = buildingId && buildingId !== 'all' ? buildingId : null;
+
+    if (targetCompanyId) {
+      try {
+        const foundComp = await prisma.company.findFirst({
+          where: {
+            OR: [
+              { id: targetCompanyId },
+              { name: targetCompanyId },
+            ],
+          },
+          select: { id: true },
+        });
+        if (foundComp) {
+          targetCompanyId = foundComp.id;
+        }
+      } catch (err) {
+        console.warn('Company resolution note:', err);
+      }
+    }
 
     let rows: any[] = [];
 
     switch (module) {
       case 'Financials': {
         const where: any = {};
-        if (cleanComp) {
-          where.tenant = { companyId: cleanComp };
+        if (targetCompanyId) {
+          where.OR = [
+            { tenant: { companyId: targetCompanyId } },
+            { lease: { unit: { property: { companyId: targetCompanyId } } } },
+          ];
         }
         if (cleanBld) {
           where.lease = { unit: { propertyId: cleanBld } };
@@ -124,8 +146,8 @@ export class ReportsService {
 
       case 'Properties': {
         const where: any = {};
-        if (cleanComp) {
-          where.companyId = cleanComp;
+        if (targetCompanyId) {
+          where.companyId = targetCompanyId;
         }
         if (cleanBld) {
           where.id = cleanBld;
@@ -171,8 +193,11 @@ export class ReportsService {
         const where: any = {};
         if (cleanBld) {
           where.unit = { propertyId: cleanBld };
-        } else if (cleanComp) {
-          where.unit = { property: { companyId: cleanComp } };
+        } else if (targetCompanyId) {
+          where.OR = [
+            { unit: { property: { companyId: targetCompanyId } } },
+            { tenant: { companyId: targetCompanyId } },
+          ];
         }
 
         const leases = await prisma.lease.findMany({
@@ -215,8 +240,8 @@ export class ReportsService {
         const where: any = {};
         if (cleanBld) {
           where.propertyId = cleanBld;
-        } else if (cleanComp) {
-          where.property = { companyId: cleanComp };
+        } else if (targetCompanyId) {
+          where.property = { companyId: targetCompanyId };
         }
 
         const cases = await prisma.talCase.findMany({
@@ -259,8 +284,8 @@ export class ReportsService {
 
       case 'Payroll': {
         const where: any = {};
-        if (cleanComp) {
-          where.user = { companyId: cleanComp };
+        if (targetCompanyId) {
+          where.user = { companyId: targetCompanyId };
         }
 
         const staffProfiles = await prisma.staffProfile.findMany({
