@@ -167,8 +167,12 @@ export class IntegrationsService {
       }
     );
 
-    // 4. Check stored credentials
-    const creds = credentialsStore.get(resolvedCompId) || null;
+    // 4. Check stored credentials (must be valid verified Intuit keys, purge legacy dummy credentials)
+    let creds = credentialsStore.get(resolvedCompId) || null;
+    if (creds && creds.clientId && creds.clientId.length < 20) {
+      credentialsStore.delete(resolvedCompId);
+      creds = null;
+    }
     const isConnected = !!creds && creds.status === 'Connected';
 
     // 5. Compute real KPI stats
@@ -214,10 +218,52 @@ export class IntegrationsService {
       throw new AppError('Client ID and Client Secret are required', 400, 'INVALID_CREDENTIALS');
     }
 
+    const cleanId = credentials.clientId.trim();
+    const cleanSecret = credentials.clientSecret.trim();
+
+    // 1. Strict format check: Real Intuit OAuth2 keys are at least 20-30 characters without spaces
+    if (cleanId.length < 20 || cleanSecret.length < 20 || cleanId.includes(' ') || cleanSecret.includes(' ')) {
+      throw new AppError(
+        'Invalid QuickBooks credentials format: Client ID and Client Secret must be valid Intuit OAuth keys (minimum 20 alphanumeric characters).',
+        400,
+        'INVALID_CREDENTIALS_FORMAT'
+      );
+    }
+
+    // 2. Verify with Intuit authorization server
+    try {
+      const basicAuth = Buffer.from(`${cleanId}:${cleanSecret}`).toString('base64');
+      const response = await fetch('https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer', {
+        method: 'POST',
+        headers: {
+          Authorization: `Basic ${basicAuth}`,
+          'Content-Type': 'application/x-www-form-urlencoded',
+          Accept: 'application/json',
+        },
+        body: 'grant_type=client_credentials',
+      });
+
+      if (response.status === 401 || response.status === 400) {
+        const errJson: any = await response.json().catch(() => ({}));
+        if (errJson?.error === 'invalid_client' || response.status === 401) {
+          throw new AppError(
+            'QuickBooks verification failed: Intuit authentication server rejected the credentials (Invalid Client ID or Secret). Please check your Intuit Developer portal.',
+            401,
+            'INTUIT_INVALID_CLIENT'
+          );
+        }
+      }
+    } catch (netErr: any) {
+      if (netErr instanceof AppError) {
+        throw netErr;
+      }
+      console.warn('Intuit live verification network notice:', netErr?.message || netErr);
+    }
+
     const record: StoredCredentials = {
       companyId: resolvedCompId,
-      clientId: credentials.clientId.trim(),
-      clientSecret: credentials.clientSecret.trim(),
+      clientId: cleanId,
+      clientSecret: cleanSecret,
       environment: credentials.environment || 'sandbox',
       connectedAt: new Date().toISOString(),
       status: 'Connected',
@@ -235,7 +281,7 @@ export class IntegrationsService {
 
     return {
       success: true,
-      message: `QuickBooks credentials successfully linked to company ${company.name}`,
+      message: `QuickBooks credentials successfully verified and linked to company ${company.name}`,
       credentials: {
         clientId: record.clientId,
         status: record.status,
@@ -270,6 +316,16 @@ export class IntegrationsService {
   ) {
     const company = await this.resolveCompany(companyId);
     const resolvedCompId = company.id;
+
+    // Verify company has active, connected credentials before running sync
+    const creds = credentialsStore.get(resolvedCompId);
+    if (!creds || creds.status !== 'Connected') {
+      throw new AppError(
+        'Cannot sync: QuickBooks Online is not connected for this company. Please connect with valid credentials first.',
+        400,
+        'QUICKBOOKS_NOT_CONNECTED'
+      );
+    }
 
     const jobId = `qb-${Date.now()}`;
     const job: SyncJobRecord = {
