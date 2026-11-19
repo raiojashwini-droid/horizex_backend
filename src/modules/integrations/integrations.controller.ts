@@ -22,6 +22,16 @@ export const saveQuickBooksCredentials = async (req: Request, res: Response, nex
   }
 };
 
+export const disconnectQuickBooks = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const companyId = (req.body.companyId as string) || (req.query.companyId as string) || req.user?.effectiveCompanyId || req.user?.companyId;
+    const result = await IntegrationsService.disconnectQuickBooks(companyId, req.user?.userId);
+    return sendSuccess(res, result, 200);
+  } catch (err) {
+    return next(err);
+  }
+};
+
 export const triggerQuickBooksSync = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const companyId = (req.body.companyId as string) || (req.query.companyId as string) || req.user?.effectiveCompanyId || req.user?.companyId;

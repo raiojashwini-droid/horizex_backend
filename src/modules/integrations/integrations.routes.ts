@@ -2,6 +2,7 @@ import { Router } from 'express';
 import {
   getQuickBooksOverview,
   saveQuickBooksCredentials,
+  disconnectQuickBooks,
   triggerQuickBooksSync,
   getCalendarEvents,
   createCalendarEvent,
@@ -31,6 +32,11 @@ router.post(
   '/quickbooks/credentials',
   authorizeRoles('SUPER_ADMIN', 'COMPANY_ADMIN', 'ACCOUNTANT', 'ADMIN'),
   saveQuickBooksCredentials
+);
+router.post(
+  '/quickbooks/disconnect',
+  authorizeRoles('SUPER_ADMIN', 'COMPANY_ADMIN', 'ACCOUNTANT', 'ADMIN'),
+  disconnectQuickBooks
 );
 router.post(
   '/quickbooks/sync',

@@ -244,6 +244,24 @@ export class IntegrationsService {
     };
   }
 
+  static async disconnectQuickBooks(companyId?: string | null, actorUserId?: string) {
+    const company = await this.resolveCompany(companyId);
+    credentialsStore.delete(company.id);
+
+    await createAuditLog({
+      userId: actorUserId,
+      action: 'QUICKBOOKS_DISCONNECTED',
+      entityType: 'Integration',
+      entityId: company.id,
+      newData: { companyId: company.id, companyName: company.name },
+    });
+
+    return {
+      success: true,
+      message: `QuickBooks disconnected successfully for ${company.name}`,
+    };
+  }
+
   static async triggerQuickBooksSync(
     companyId?: string | null,
     entityType?: string,
